@@ -1,0 +1,17 @@
+{
+    "name": "tournament-bot",
+    "version": "1.0.0",
+    "description": "Discord Tournament Management Bot",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node --experimental-sqlite src/index.js",
+        "deploy": "node --experimental-sqlite deploy-commands.js",
+        "dev": "node --watch --experimental-sqlite src/index.js"
+    },
+    "dependencies": {
+        "@napi-rs/canvas": "^0.1.65",
+        "discord.js": "^14.16.3",
+        "dotenv": "^16.4.7"
+    }
+}
