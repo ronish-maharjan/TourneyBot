@@ -353,22 +353,26 @@ async function dmOpponentDqWin(guild, tournament, opponentId, match) {
 //  AUTO-COMPLETE TOURNAMENT AFTER DQ
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * If DQ caused all remaining matches to resolve, complete the tournament.
- * Mirrors the logic in matchService.completeTournament but avoids circular import.
- */
 async function autoCompleteTournament(guild, tournament) {
-  const { updateTournamentStatus: updateStatus } =
-    await import("../database/queries.js");
+  const {
+    updateTournamentStatus: updateStatus,
+    getTournamentById: getById,
+    getLeaderboard: getLb,
+    getCompletedMatchCount: getCompleted,
+    getTotalMatchCount: getTotal,
+    getActiveParticipants: getActive,
+  } = await import("../database/queries.js");
 
   updateStatus(tournament.id, TOURNAMENT_STATUS.COMPLETED);
 
-  const fresh = getTournamentById(tournament.id);
-  const leaderboard = getLeaderboard(tournament.id);
-  const completed = getCompletedMatchCount(tournament.id);
-  const total = getTotalMatchCount(tournament.id);
+  const fresh = getById(tournament.id);
+  const leaderboard = getLb(tournament.id);
+  const completed = getCompleted(tournament.id);
+  const total = getTotal(tournament.id);
 
+  // ── Final canvas refreshes ─────────────────────────────────
   await refreshLeaderboard(guild, fresh);
+  await refreshBracket(guild, fresh);
 
   const resultsEmbed = new EmbedBuilder()
     .setTitle(`🏆 Tournament Complete — ${fresh.name}`)
@@ -411,11 +415,11 @@ async function autoCompleteTournament(guild, tournament) {
   await refreshAdminPanel(guild, fresh);
 
   // DM all active participants
-  const participants = getActiveParticipants(tournament.id);
+  const participants = getActive(tournament.id);
   for (const p of participants) {
     const rank = leaderboard.findIndex((l) => l.user_id === p.user_id) + 1;
     const medals = ["🥇", "🥈", "🥉"];
-    const medal = rank <= 3 ? medals[rank - 1] : "";
+    const medal = rank > 0 && rank <= 3 ? medals[rank - 1] : "";
 
     try {
       const member = await guild.members.fetch(p.user_id).catch(() => null);

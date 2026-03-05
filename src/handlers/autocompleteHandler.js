@@ -1,18 +1,27 @@
 // ─── src/handlers/autocompleteHandler.js ─────────────────────────
 // Provides autocomplete suggestions for tournament-related options.
 
-import { getActiveTournamentsByGuild } from "../database/queries.js";
+import {
+  getActiveTournamentsByGuild,
+  getTournamentsByGuild,
+} from "../database/queries.js";
 
 /**
  * @param {import('discord.js').AutocompleteInteraction} interaction
  */
 export async function handleAutocomplete(interaction) {
   const focused = interaction.options.getFocused(true);
+  const command = interaction.commandName;
 
-  // ── "tournament" option (used by /tournament-info, /match) ─
   if (focused.name === "tournament") {
     const search = focused.value.toLowerCase();
-    const tournaments = getActiveTournamentsByGuild(interaction.guildId);
+
+    // /tournament-info shows ALL tournaments (including completed)
+    // /match shows only active tournaments
+    const tournaments =
+      command === "tournament-info"
+        ? getTournamentsByGuild(interaction.guildId)
+        : getActiveTournamentsByGuild(interaction.guildId);
 
     const choices = tournaments
       .filter(
@@ -20,7 +29,7 @@ export async function handleAutocomplete(interaction) {
       )
       .slice(0, 25)
       .map((t) => ({
-        name: `${t.name} [${t.status.replaceAll("_", " ")}]`,
+        name: `${t.name} [${formatStatusShort(t.status)}]`,
         value: t.id,
       }));
 
@@ -28,6 +37,23 @@ export async function handleAutocomplete(interaction) {
     return;
   }
 
-  // ── Fallback: return empty list ────────────────────────────
+  // Fallback
   await interaction.respond([]);
+}
+
+/**
+ * Short status labels for autocomplete display.
+ * @param {string} status
+ * @returns {string}
+ */
+function formatStatusShort(status) {
+  const map = {
+    created: "Created",
+    registration_open: "Reg Open",
+    registration_closed: "Reg Closed",
+    in_progress: "In Progress",
+    completed: "Completed",
+    cancelled: "Cancelled",
+  };
+  return map[status] ?? status;
 }

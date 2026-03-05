@@ -2,7 +2,13 @@
 // /tournaments  — Lists all active tournaments in the server.
 
 import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from "discord.js";
-import { getActiveTournamentsByGuild } from "../../database/queries.js";
+import {
+  getActiveTournamentsByGuild,
+  getParticipantCount,
+  getActiveParticipantCount,
+  getCompletedMatchCount,
+  getTotalMatchCount,
+} from "../../database/queries.js";
 import { COLORS } from "../../config.js";
 import { formatStatus } from "../../utils/helpers.js";
 
@@ -33,16 +39,38 @@ export async function execute(interaction) {
   const embed = new EmbedBuilder()
     .setTitle("🏆 Active Tournaments")
     .setColor(COLORS.PRIMARY)
-    .setDescription(
-      tournaments
-        .map((t, i) => {
-          const status = formatStatus(t.status);
-          return `**${i + 1}.** ${t.name}\n　Status: ${status} · Format: Round Robin · Players: ${t.max_players} max`;
-        })
-        .join("\n\n"),
-    )
-    .setFooter({ text: "Use /tournament-info for details" })
     .setTimestamp();
+
+  const lines = [];
+
+  for (let i = 0; i < tournaments.length; i++) {
+    const t = tournaments[i];
+    const status = formatStatus(t.status);
+    const registered = getParticipantCount(t.id);
+    const active = getActiveParticipantCount(t.id);
+    const completedM = getCompletedMatchCount(t.id);
+    const totalM = getTotalMatchCount(t.id);
+    const teamLabel = t.team_size === 1 ? "Solo" : "Duo";
+    const progressPct =
+      totalM > 0 ? Math.round((completedM / totalM) * 100) : 0;
+
+    let matchLine = "";
+    if (totalM > 0) {
+      matchLine = `\n　⚔️ Matches: ${completedM}/${totalM} (${progressPct}%) · Round ${t.current_round}/${t.total_rounds}`;
+    }
+
+    lines.push(
+      `**${i + 1}. ${t.name}**\n` +
+        `　${status}\n` +
+        `　👥 Players: ${active}/${t.max_players} · ${teamLabel} · Bo${t.best_of}` +
+        matchLine,
+    );
+  }
+
+  embed.setDescription(lines.join("\n\n"));
+  embed.setFooter({
+    text: `${tournaments.length} active tournament(s) · Use /tournament-info for details`,
+  });
 
   await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }

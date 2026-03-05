@@ -770,7 +770,7 @@ export async function launchAvailableMatches(guild, tournament) {
 // ═════════════════════════════════════════════════════════════════
 
 /**
- * End the tournament: cancel remaining matches, announce results.
+ * End the tournament: cancel remaining matches, refresh images, announce results.
  */
 export async function endTournament(guild, tournament) {
   // Cancel outstanding matches
@@ -784,6 +784,10 @@ export async function endTournament(guild, tournament) {
   const completed = getCompletedMatchCount(tournament.id);
   const total = getTotalMatchCount(tournament.id);
 
+  // ── Refresh canvas images ──────────────────────────────────
+  await refreshLeaderboard(guild, fresh);
+  await refreshBracket(guild, fresh);
+
   // ── Build results embed ────────────────────────────────────
   const resultsEmbed = new EmbedBuilder()
     .setTitle(`🏁 Tournament Complete — ${fresh.name}`)
@@ -795,15 +799,15 @@ export async function endTournament(guild, tournament) {
       "The tournament ended with no completed matches.",
     );
   } else {
-    // Medal emojis for top 3
     const medals = ["🥇", "🥈", "🥉"];
-    let description = "";
+    let description = "**Final Standings:**\n\n";
 
     const top = leaderboard.slice(0, 10);
     for (let i = 0; i < top.length; i++) {
       const p = top[i];
       const prefix = i < 3 ? medals[i] : `**${i + 1}.**`;
-      description += `${prefix} <@${p.user_id}> — ${p.points} pts (${p.wins}W / ${p.losses}L / ${p.draws}D)\n`;
+      const dqTag = p.status === "disqualified" ? " *(DQ)*" : "";
+      description += `${prefix} <@${p.user_id}>${dqTag} — ${p.points} pts (${p.wins}W / ${p.losses}L / ${p.draws}D)\n`;
     }
 
     resultsEmbed.setDescription(description);
@@ -813,7 +817,6 @@ export async function endTournament(guild, tournament) {
       inline: true,
     });
 
-    // Announce winner
     if (leaderboard.length > 0) {
       const winner = leaderboard[0];
       resultsEmbed.addFields({
@@ -827,10 +830,41 @@ export async function endTournament(guild, tournament) {
   await refreshAdminPanel(guild, fresh);
   await sendTournamentNotice(guild, fresh, resultsEmbed);
 
+  // ── DM all participants with final results ─────────────────
+  const participants = getActiveParticipants(tournament.id);
+  for (const p of participants) {
+    const rank = leaderboard.findIndex((l) => l.user_id === p.user_id) + 1;
+    const medals = ["🥇", "🥈", "🥉"];
+    const medal = rank > 0 && rank <= 3 ? medals[rank - 1] : "";
+
+    try {
+      const member = await guild.members.fetch(p.user_id).catch(() => null);
+      if (member) {
+        await member.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(`${medal} Tournament Ended — ${fresh.name}`)
+              .setColor(rank === 1 ? COLORS.SUCCESS : COLORS.INFO)
+              .setDescription(
+                `**${fresh.name}** has ended!\n\n` +
+                  `🏅 **Rank:** #${rank}\n` +
+                  `⭐ **Points:** ${p.points}\n` +
+                  `✅ **Wins:** ${p.wins} · ❌ **Losses:** ${p.losses} · 🤝 **Draws:** ${p.draws}\n` +
+                  `🎮 **Matches Played:** ${p.matches_played}`,
+              )
+              .setFooter({ text: guild.name })
+              .setTimestamp(),
+          ],
+        });
+      }
+    } catch {
+      // DMs disabled
+    }
+  }
+
   console.log(`[TOURNAMENT] Ended "${fresh.name}"`);
   return fresh;
 }
-
 // ═════════════════════════════════════════════════════════════════
 //  DELETE TOURNAMENT
 // ═════════════════════════════════════════════════════════════════
