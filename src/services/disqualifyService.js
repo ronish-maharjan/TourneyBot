@@ -30,6 +30,7 @@ import {
   refreshParticipationList,
   sendTournamentNotice,
   launchAvailableMatches,
+  refreshBracket,
 } from "./tournamentService.js";
 import { updateMatchThreadEmbed } from "./threadService.js";
 
@@ -133,6 +134,7 @@ export async function disqualifyPlayer(
     // ── 6. Refresh embeds ────────────────────────────────────
     const fresh = getTournamentById(tournament.id);
     await refreshLeaderboard(guild, fresh);
+    await refreshBracket(guild, fresh);
     await refreshParticipationList(guild, fresh);
     await refreshAdminPanel(guild, fresh);
 

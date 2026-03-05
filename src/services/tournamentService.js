@@ -1,7 +1,6 @@
 // ─── src/services/tournamentService.js ───────────────────────────
 // Core service for tournament lifecycle: creation, config, registration,
 // start, end, delete — and all the embed/message helpers.
-import { createMatchThreads } from "./threadService.js";
 import {
   ChannelType,
   PermissionFlagsBits,
@@ -9,6 +8,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  AttachmentBuilder,
 } from "discord.js";
 import {
   CHANNEL_NAMES,
@@ -22,10 +22,13 @@ import {
   getActiveParticipantCount,
   getParticipantCount,
   getActiveParticipants,
+  getParticipantsByTournament,
   getSpectators,
   getLeaderboard,
   getCompletedMatchCount,
   getTotalMatchCount,
+  getMatchesByTournament,
+  getAllAvailableMatches,
   updateTournamentChannels,
   updateTournamentRoles,
   updateTournamentMessageId,
@@ -34,9 +37,11 @@ import {
   deleteTournament,
   createMatchesBulk,
   cancelAllPendingMatches,
-  getAllAvailableMatches,
 } from "../database/queries.js";
 import { generateRoundRobinSchedule } from "./matchService.js";
+import { createMatchThreads } from "./threadService.js";
+import { generateLeaderboardImage } from "../canvas/leaderboard.js";
+import { generateBracketImage } from "../canvas/bracket.js";
 import { generateId, formatStatus } from "../utils/helpers.js";
 
 // ── Bot permission set reused for every channel ──────────────────
@@ -417,110 +422,129 @@ export async function refreshParticipationList(guild, tournament) {
 }
 
 // ═════════════════════════════════════════════════════════════════
-//  LEADERBOARD
+//  LEADERBOARD (Canvas Image)
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * Edit the leaderboard-channel message with current standings.
- * Uses an embed for now — Stage 7 replaces with a canvas image.
- *
- * @param {import('discord.js').Guild} guild
- * @param {object} tournament  DB row
- */
 export async function refreshLeaderboard(guild, tournament) {
-  if (!tournament.leaderboard_channel_id || !tournament.leaderboard_message_id)
+  if (
+    !tournament.leaderboard_channel_id ||
+    !tournament.leaderboard_message_id
+  ) {
+    console.log("[LEADERBOARD] No channel/message ID — skipping");
     return;
+  }
 
   try {
     const channel = await guild.channels.fetch(
       tournament.leaderboard_channel_id,
     );
-    if (!channel) return;
+    if (!channel) {
+      console.log("[LEADERBOARD] Channel not found");
+      return;
+    }
 
     const message = await channel.messages.fetch(
       tournament.leaderboard_message_id,
     );
-    if (!message) return;
+    if (!message) {
+      console.log("[LEADERBOARD] Message not found");
+      return;
+    }
 
     const leaderboard = getLeaderboard(tournament.id);
     const completed = getCompletedMatchCount(tournament.id);
     const total = getTotalMatchCount(tournament.id);
 
-    const embed = new EmbedBuilder()
-      .setTitle(`📊 Leaderboard — ${tournament.name}`)
-      .setColor(COLORS.PRIMARY)
-      .setTimestamp();
+    console.log(
+      `[LEADERBOARD] Generating image: ${leaderboard.length} players, ${completed}/${total} matches`,
+    );
 
-    if (leaderboard.length === 0) {
-      embed.setDescription("No standings available yet.");
-      await message.edit({ embeds: [embed] });
-      return;
-    }
-
-    // ── Build standings table ────────────────────────────────
-    const medals = ["🥇", "🥈", "🥉"];
-    const lines = [];
-
-    for (let i = 0; i < leaderboard.length; i++) {
-      const p = leaderboard[i];
-      const rank = i < 3 ? medals[i] : `**${i + 1}.**`;
-      const bar = buildPointsBar(p.points, leaderboard[0].points);
-      const status = p.status === "disqualified" ? " *(DQ)*" : "";
-
-      lines.push(
-        `${rank} <@${p.user_id}>${status}\n` +
-          `　${bar} **${p.points}** pts · ${p.wins}W / ${p.losses}L / ${p.draws}D · ${p.matches_played} played`,
-      );
-    }
-
-    // Discord embed description limit is 4096 chars — split if needed
-    const description = lines.join("\n\n");
-    if (description.length <= 4096) {
-      embed.setDescription(description);
-    } else {
-      // Truncate to fit — show top players
-      const truncated = [];
-      let charCount = 0;
-      for (const line of lines) {
-        if (charCount + line.length + 2 > 4000) {
-          truncated.push(
-            `\n*…and ${leaderboard.length - truncated.length} more*`,
-          );
-          break;
-        }
-        truncated.push(line);
-        charCount += line.length + 2;
-      }
-      embed.setDescription(truncated.join("\n\n"));
-    }
-
-    // ── Footer with progress ─────────────────────────────────
-    const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
-    embed.setFooter({
-      text: `${completed}/${total} matches completed (${progressPct}%) · Round ${tournament.current_round}/${tournament.total_rounds}`,
+    const buffer = generateLeaderboardImage(
+      tournament,
+      leaderboard,
+      completed,
+      total,
+    );
+    const attachment = new AttachmentBuilder(buffer, {
+      name: "leaderboard.png",
     });
 
-    await message.edit({ embeds: [embed] });
+    await message.edit({
+      content: "",
+      embeds: [],
+      files: [attachment],
+      attachments: [],
+    });
+
+    console.log("[LEADERBOARD] Image updated successfully");
   } catch (err) {
-    console.warn("[LEADERBOARD] Could not refresh:", err.message);
+    console.error("[LEADERBOARD] Error refreshing:", err);
   }
 }
 
-/**
- * Build a visual bar proportional to the leader's points.
- * @param {number} points     This player's points
- * @param {number} maxPoints  Top player's points
- * @returns {string}
- */
-function buildPointsBar(points, maxPoints) {
-  if (maxPoints <= 0) return "⬛";
+// ═════════════════════════════════════════════════════════════════
+//  BRACKET (Canvas Image)
+// ═════════════════════════════════════════════════════════════════
 
-  const MAX_BLOCKS = 10;
-  const filled = Math.round((points / maxPoints) * MAX_BLOCKS);
-  const empty = MAX_BLOCKS - filled;
+export async function refreshBracket(guild, tournament) {
+  if (!tournament.bracket_channel_id || !tournament.bracket_message_id) {
+    console.log("[BRACKET] No channel/message ID — skipping");
+    return;
+  }
 
-  return "🟩".repeat(filled) + "⬛".repeat(empty);
+  try {
+    const channel = await guild.channels.fetch(tournament.bracket_channel_id);
+    if (!channel) {
+      console.log("[BRACKET] Channel not found");
+      return;
+    }
+
+    const message = await channel.messages.fetch(tournament.bracket_message_id);
+    if (!message) {
+      console.log("[BRACKET] Message not found");
+      return;
+    }
+
+    const allMatches = getMatchesByTournament(tournament.id);
+    const matchesByRound = {};
+    for (const m of allMatches) {
+      if (!matchesByRound[m.round]) matchesByRound[m.round] = [];
+      matchesByRound[m.round].push(m);
+    }
+
+    const participants = getParticipantsByTournament(tournament.id);
+    const participantMap = new Map();
+    for (const p of participants) {
+      participantMap.set(p.user_id, {
+        display_name: p.display_name,
+        username: p.username,
+      });
+    }
+
+    console.log(
+      `[BRACKET] Generating image: ${allMatches.length} matches, ${Object.keys(matchesByRound).length} rounds`,
+    );
+
+    const buffer = generateBracketImage(
+      tournament,
+      matchesByRound,
+      participantMap,
+    );
+    const attachment = new AttachmentBuilder(buffer, { name: "bracket.png" });
+
+    await message.edit({
+      content: "",
+      embeds: [],
+      files: [attachment],
+      attachments: [],
+    });
+
+    console.log("[BRACKET] Image updated successfully");
+  } catch (err) {
+    console.error("[BRACKET] Error refreshing:", err);
+  }
 }
+
 // ═════════════════════════════════════════════════════════════════
 //  NOTICE HELPER
 // ═════════════════════════════════════════════════════════════════
@@ -669,17 +693,18 @@ export async function startTournament(guild, tournament) {
       .setColor(COLORS.SUCCESS)
       .setTimestamp(),
   );
-  // ── Initial leaderboard (all players at 0 pts) ────────────
-  await refreshLeaderboard(guild, fresh);
 
   console.log(
     `[TOURNAMENT] Started "${fresh.name}" — ${matches.length} matches, ${totalRounds} rounds`,
   );
 
+  // ── Initial leaderboard (all players at 0 pts) ────────────
+  await refreshLeaderboard(guild, fresh);
+
+  // ── Initial bracket (all matches pending) ──────────────────
+  await refreshBracket(guild, fresh);
+
   // ── Launch first batch of available matches ────────────────
-  // In round-robin every player plays everyone. We start threads
-  // for all matches where BOTH players are currently free (not
-  // already in an in_progress match).
   await launchAvailableMatches(guild, fresh);
 
   return fresh;

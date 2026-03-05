@@ -23,8 +23,9 @@ import { COLORS, POINTS, TOURNAMENT_STATUS } from "../config.js";
 import {
   refreshAdminPanel,
   sendTournamentNotice,
-  refreshLeaderboard,
   launchAvailableMatches,
+  refreshLeaderboard,
+  refreshBracket,
 } from "./tournamentService.js";
 import { createMatchThreads } from "./threadService.js";
 
@@ -130,26 +131,29 @@ export async function processMatchCompletion(guild, tournament, match) {
     const freshForLeaderboard = getTournamentById(tournament.id);
     await refreshLeaderboard(guild, freshForLeaderboard);
 
-    // ── 3. Post result in result channel ───────────────────────
+    // ── 3. Refresh bracket ─────────────────────────────────────
+    await refreshBracket(guild, freshForLeaderboard);
+
+    // ── 4. Post result in result channel ───────────────────────
     await postMatchResult(guild, tournament, match);
 
-    // ── 4. DM players about the result ─────────────────────────
+    // ── 5. DM players about the result ─────────────────────────
     await dmMatchResult(guild, tournament, match);
 
-    // ── 5. Update round tracking ───────────────────────────────
+    // ── 6. Update round tracking ───────────────────────────────
     await updateRoundTracking(guild, tournament, match);
 
-    // ── 6. Check if entire tournament is complete ──────────────
+    // ── 7. Check if entire tournament is complete ──────────────
     const tournamentDone = isTournamentComplete(tournament.id);
 
     if (tournamentDone) {
       await completeTournament(guild, tournament);
     } else {
-      // ── 7. Launch next available matches ─────────────────────
+      // ── 8. Launch next available matches ─────────────────────
       const freshTournament = getTournamentById(tournament.id);
       await launchAvailableMatches(guild, freshTournament);
 
-      // ── 8. Refresh admin panel ───────────────────────────────
+      // ── 9. Refresh admin panel ───────────────────────────────
       await refreshAdminPanel(guild, freshTournament);
     }
 
@@ -404,7 +408,9 @@ async function completeTournament(guild, tournament) {
   const completed = getCompletedMatchCount(tournament.id);
   const total = getTotalMatchCount(tournament.id);
 
+  // ── Final canvas refreshes ─────────────────────────────────
   await refreshLeaderboard(guild, fresh);
+  await refreshBracket(guild, fresh);
 
   // ── Build final results embed ──────────────────────────────
   const resultsEmbed = new EmbedBuilder()
