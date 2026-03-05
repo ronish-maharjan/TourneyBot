@@ -1,7 +1,7 @@
 // ─── src/services/tournamentService.js ───────────────────────────
 // Core service for tournament lifecycle: creation, config, registration,
 // start, end, delete — and all the embed/message helpers.
-
+import { createMatchThreads } from "./threadService.js";
 import {
   ChannelType,
   PermissionFlagsBits,
@@ -34,6 +34,7 @@ import {
   deleteTournament,
   createMatchesBulk,
   cancelAllPendingMatches,
+  getAllAvailableMatches,
 } from "../database/queries.js";
 import { generateRoundRobinSchedule } from "./matchService.js";
 import { generateId, formatStatus } from "../utils/helpers.js";
@@ -416,6 +417,111 @@ export async function refreshParticipationList(guild, tournament) {
 }
 
 // ═════════════════════════════════════════════════════════════════
+//  LEADERBOARD
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Edit the leaderboard-channel message with current standings.
+ * Uses an embed for now — Stage 7 replaces with a canvas image.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {object} tournament  DB row
+ */
+export async function refreshLeaderboard(guild, tournament) {
+  if (!tournament.leaderboard_channel_id || !tournament.leaderboard_message_id)
+    return;
+
+  try {
+    const channel = await guild.channels.fetch(
+      tournament.leaderboard_channel_id,
+    );
+    if (!channel) return;
+
+    const message = await channel.messages.fetch(
+      tournament.leaderboard_message_id,
+    );
+    if (!message) return;
+
+    const leaderboard = getLeaderboard(tournament.id);
+    const completed = getCompletedMatchCount(tournament.id);
+    const total = getTotalMatchCount(tournament.id);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📊 Leaderboard — ${tournament.name}`)
+      .setColor(COLORS.PRIMARY)
+      .setTimestamp();
+
+    if (leaderboard.length === 0) {
+      embed.setDescription("No standings available yet.");
+      await message.edit({ embeds: [embed] });
+      return;
+    }
+
+    // ── Build standings table ────────────────────────────────
+    const medals = ["🥇", "🥈", "🥉"];
+    const lines = [];
+
+    for (let i = 0; i < leaderboard.length; i++) {
+      const p = leaderboard[i];
+      const rank = i < 3 ? medals[i] : `**${i + 1}.**`;
+      const bar = buildPointsBar(p.points, leaderboard[0].points);
+      const status = p.status === "disqualified" ? " *(DQ)*" : "";
+
+      lines.push(
+        `${rank} <@${p.user_id}>${status}\n` +
+          `　${bar} **${p.points}** pts · ${p.wins}W / ${p.losses}L / ${p.draws}D · ${p.matches_played} played`,
+      );
+    }
+
+    // Discord embed description limit is 4096 chars — split if needed
+    const description = lines.join("\n\n");
+    if (description.length <= 4096) {
+      embed.setDescription(description);
+    } else {
+      // Truncate to fit — show top players
+      const truncated = [];
+      let charCount = 0;
+      for (const line of lines) {
+        if (charCount + line.length + 2 > 4000) {
+          truncated.push(
+            `\n*…and ${leaderboard.length - truncated.length} more*`,
+          );
+          break;
+        }
+        truncated.push(line);
+        charCount += line.length + 2;
+      }
+      embed.setDescription(truncated.join("\n\n"));
+    }
+
+    // ── Footer with progress ─────────────────────────────────
+    const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+    embed.setFooter({
+      text: `${completed}/${total} matches completed (${progressPct}%) · Round ${tournament.current_round}/${tournament.total_rounds}`,
+    });
+
+    await message.edit({ embeds: [embed] });
+  } catch (err) {
+    console.warn("[LEADERBOARD] Could not refresh:", err.message);
+  }
+}
+
+/**
+ * Build a visual bar proportional to the leader's points.
+ * @param {number} points     This player's points
+ * @param {number} maxPoints  Top player's points
+ * @returns {string}
+ */
+function buildPointsBar(points, maxPoints) {
+  if (maxPoints <= 0) return "⬛";
+
+  const MAX_BLOCKS = 10;
+  const filled = Math.round((points / maxPoints) * MAX_BLOCKS);
+  const empty = MAX_BLOCKS - filled;
+
+  return "🟩".repeat(filled) + "⬛".repeat(empty);
+}
+// ═════════════════════════════════════════════════════════════════
 //  NOTICE HELPER
 // ═════════════════════════════════════════════════════════════════
 
@@ -496,6 +602,24 @@ export async function closeRegistration(guild, tournament) {
  * @returns {object} Fresh tournament row from DB.
  * @throws {Error}   If validation fails.
  */
+// ═════════════════════════════════════════════════════════════════
+//  START TOURNAMENT
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Start the tournament:
+ *   1. Validate minimum players.
+ *   2. Generate round-robin schedule.
+ *   3. Bulk-insert matches.
+ *   4. Update status and round tracking.
+ *   5. Refresh embeds and send notice.
+ *   6. Find first batch of available matches and create threads.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {object} tournament  DB row
+ * @returns {Promise<object>}  Fresh tournament row from DB.
+ * @throws {Error} If validation fails.
+ */
 export async function startTournament(guild, tournament) {
   const participants = getActiveParticipants(tournament.id);
 
@@ -539,16 +663,81 @@ export async function startTournament(guild, tournament) {
         `**${fresh.name}** has begun!\n\n` +
           `👥 **${participants.length}** participants\n` +
           `⚔️ **${matches.length}** matches across **${totalRounds}** round(s)\n` +
-          `📋 Format: Round Robin · Best of ${fresh.best_of}`,
+          `📋 Format: Round Robin · Best of ${fresh.best_of}\n\n` +
+          `Match threads are being created in <#${fresh.match_channel_id}>…`,
       )
       .setColor(COLORS.SUCCESS)
       .setTimestamp(),
   );
+  // ── Initial leaderboard (all players at 0 pts) ────────────
+  await refreshLeaderboard(guild, fresh);
 
   console.log(
     `[TOURNAMENT] Started "${fresh.name}" — ${matches.length} matches, ${totalRounds} rounds`,
   );
+
+  // ── Launch first batch of available matches ────────────────
+  // In round-robin every player plays everyone. We start threads
+  // for all matches where BOTH players are currently free (not
+  // already in an in_progress match).
+  await launchAvailableMatches(guild, fresh);
+
   return fresh;
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  LAUNCH AVAILABLE MATCHES
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Find all pending matches where both players are free and create
+ * threads for them.  Called on tournament start AND after each match
+ * completes (from Stage 6D).
+ *
+ * "Free" means neither player currently has a match with status
+ * 'in_progress'.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {object} tournament  DB tournament row
+ * @returns {Promise<number>}  Number of threads created
+ */
+export async function launchAvailableMatches(guild, tournament) {
+  const available = getAllAvailableMatches(tournament.id);
+
+  if (available.length === 0) {
+    console.log(
+      `[MATCH] No available matches to launch for "${tournament.name}"`,
+    );
+    return 0;
+  }
+
+  // Deduplicate: a player should only appear in ONE new thread
+  // getAllAvailableMatches already excludes busy players, but a
+  // player could appear in multiple "available" rows.  We pick
+  // greedily: first-come-first-served by round then match_number.
+  const busyPlayers = new Set();
+  const toCreate = [];
+
+  for (const match of available) {
+    const p1Busy = busyPlayers.has(match.player1_id);
+    const p2Busy = busyPlayers.has(match.player2_id);
+
+    if (!p1Busy && !p2Busy) {
+      toCreate.push(match);
+      busyPlayers.add(match.player1_id);
+      busyPlayers.add(match.player2_id);
+    }
+  }
+
+  if (toCreate.length === 0) {
+    return 0;
+  }
+
+  console.log(
+    `[MATCH] Launching ${toCreate.length} match thread(s) for "${tournament.name}"`,
+  );
+  const created = await createMatchThreads(guild, tournament, toCreate);
+  return created;
 }
 
 // ═════════════════════════════════════════════════════════════════

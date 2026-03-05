@@ -842,6 +842,20 @@ export function getMatchBetweenPlayers(tournamentId, userId1, userId2) {
 }
 
 /**
+ * Get the current round number from tournament.
+ * @param {string} tournamentId
+ * @returns {number}
+ */
+
+export function getCurrentRound(tournamentId) {
+  const db = getDatabase();
+  const row = db
+    .prepare("SELECT current_round FROM tournaments WHERE id = ?")
+    .get(tournamentId);
+  return row?.current_round ?? 0;
+}
+
+/**
  * Cancel ALL pending/in-progress matches for a tournament.
  * Used when ending a tournament early.
  */

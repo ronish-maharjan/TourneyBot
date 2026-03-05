@@ -1,20 +1,28 @@
 // ─── src/handlers/modalHandler.js ────────────────────────────────
 // Routes modal-submit interactions by custom-ID prefix.
 
-import { MessageFlags } from "discord.js";
+import { MessageFlags, EmbedBuilder } from "discord.js";
 import {
   getTournamentById,
   updateTournamentConfig,
+  getMatchById,
+  getParticipant,
+  updateMatchScore,
+  updateMatchResult,
 } from "../database/queries.js";
 import {
   refreshAdminPanel,
   refreshRegistrationMessage,
 } from "../services/tournamentService.js";
+import { updateMatchThreadEmbed } from "../services/threadService.js";
+import { processMatchCompletion } from "../services/matchService.js";
 import {
   MAX_PLAYERS_LIMIT,
   VALID_BEST_OF,
   VALID_TEAM_SIZES,
   TOURNAMENT_STATUS,
+  MATCH_STATUS,
+  COLORS,
 } from "../config.js";
 
 /**
@@ -38,12 +46,10 @@ export async function handleModal(interaction) {
     case "configure":
       return handleConfigureSubmit(interaction, targetId);
     case "score":
-      // Stage 6: handle score entry
-      await interaction.reply({
-        content: "🚧 Score submit — Stage 6",
-        flags: MessageFlags.Ephemeral,
-      });
-      break;
+      return handleScoreSubmit(interaction, targetId);
+    case "dq":
+      return handleDqSubmit(interaction, targetId); // ← ADD
+
     default:
       console.warn(
         `[MODAL] Unknown action: ${action} (${interaction.customId})`,
@@ -68,7 +74,6 @@ async function handleConfigureSubmit(interaction, tournamentId) {
     });
   }
 
-  // Cannot configure after start
   if (
     [
       TOURNAMENT_STATUS.IN_PROGRESS,
@@ -83,14 +88,12 @@ async function handleConfigureSubmit(interaction, tournamentId) {
     });
   }
 
-  // ── Extract values ─────────────────────────────────────────
   const name = interaction.fields.getTextInputValue("tournament_name").trim();
   const maxStr = interaction.fields.getTextInputValue("max_players").trim();
   const teamStr = interaction.fields.getTextInputValue("team_size").trim();
   const bestStr = interaction.fields.getTextInputValue("best_of").trim();
   const rules = interaction.fields.getTextInputValue("rules")?.trim() || "";
 
-  // ── Validate ───────────────────────────────────────────────
   const errors = [];
 
   if (name.length < 2 || name.length > 50) {
@@ -127,7 +130,6 @@ async function handleConfigureSubmit(interaction, tournamentId) {
     });
   }
 
-  // ── Save ───────────────────────────────────────────────────
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
@@ -139,11 +141,9 @@ async function handleConfigureSubmit(interaction, tournamentId) {
       rules,
     });
 
-    // Refresh embeds
     const fresh = getTournamentById(tournament.id);
     await refreshAdminPanel(interaction.guild, fresh);
 
-    // If registration is open, update that embed too
     if (fresh.status === TOURNAMENT_STATUS.REGISTRATION_OPEN) {
       await refreshRegistrationMessage(interaction.guild, fresh);
     }
@@ -163,4 +163,200 @@ async function handleConfigureSubmit(interaction, tournamentId) {
       content: `❌ Failed to update configuration: ${err.message}`,
     });
   }
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  SCORE MODAL SUBMIT
+// ═════════════════════════════════════════════════════════════════
+
+async function handleScoreSubmit(interaction, matchIdStr) {
+  const matchId = parseInt(matchIdStr, 10);
+
+  const match = getMatchById(matchId);
+  if (!match) {
+    return interaction.reply({
+      content: "❌ Match not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (match.status === "completed") {
+    return interaction.reply({
+      content: "❌ This match is already completed.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (match.status === "cancelled") {
+    return interaction.reply({
+      content: "❌ This match has been cancelled.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const tournament = getTournamentById(match.tournament_id);
+  if (!tournament) {
+    return interaction.reply({
+      content: "❌ Tournament not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const winnerInput = interaction.fields.getTextInputValue("winner").trim();
+
+  if (winnerInput !== "1" && winnerInput !== "2") {
+    return interaction.reply({
+      content:
+        "❌ Invalid input. Enter **1** or **2** to select the game winner.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const gameWinnerId =
+    winnerInput === "1" ? match.player1_id : match.player2_id;
+
+  let newP1Score = match.player1_score;
+  let newP2Score = match.player2_score;
+
+  if (gameWinnerId === match.player1_id) {
+    newP1Score += 1;
+  } else {
+    newP2Score += 1;
+  }
+
+  const p1Data = getParticipant(tournament.id, match.player1_id);
+  const p2Data = getParticipant(tournament.id, match.player2_id);
+  const p1Name = p1Data?.display_name || p1Data?.username || "Player 1";
+  const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
+  const gameWinnerName = gameWinnerId === match.player1_id ? p1Name : p2Name;
+
+  const winsNeeded = Math.ceil(tournament.best_of / 2);
+  const isCompleted = newP1Score >= winsNeeded || newP2Score >= winsNeeded;
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    if (isCompleted) {
+      const matchWinnerId =
+        newP1Score >= winsNeeded ? match.player1_id : match.player2_id;
+      const matchLoserId =
+        matchWinnerId === match.player1_id
+          ? match.player2_id
+          : match.player1_id;
+      const matchWinnerName =
+        matchWinnerId === match.player1_id ? p1Name : p2Name;
+
+      updateMatchResult(match.id, {
+        winnerId: matchWinnerId,
+        loserId: matchLoserId,
+        player1Score: newP1Score,
+        player2Score: newP2Score,
+      });
+
+      const updatedMatch = getMatchById(match.id);
+
+      await updateMatchThreadEmbed(
+        interaction.guild,
+        tournament,
+        updatedMatch,
+        true,
+        matchWinnerName,
+      );
+
+      await interaction.editReply({
+        content:
+          `✅ **Match Complete!**\n\n` +
+          `🏆 **Winner:** ${matchWinnerName}\n` +
+          `📊 **Final Score:** ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}\n\n` +
+          `_Updating stats, posting results, and scheduling next matches…_`,
+      });
+
+      // ── Post-match processing ────────────────────────────────
+      processMatchCompletion(interaction.guild, tournament, updatedMatch).catch(
+        (err) => console.error("[SCORE] Post-match processing error:", err),
+      );
+
+      console.log(
+        `[SCORE] Match #${match.match_number} (R${match.round}) completed: ${matchWinnerName} wins ${newP1Score}-${newP2Score}`,
+      );
+    } else {
+      updateMatchScore(match.id, newP1Score, newP2Score);
+
+      const updatedMatch = getMatchById(match.id);
+
+      await updateMatchThreadEmbed(
+        interaction.guild,
+        tournament,
+        updatedMatch,
+        false,
+      );
+
+      const maxScore = Math.max(newP1Score, newP2Score);
+      const gamesLeft = winsNeeded - maxScore;
+
+      await interaction.editReply({
+        content:
+          `✅ **Game recorded!**\n\n` +
+          `🎮 **Game winner:** ${gameWinnerName}\n` +
+          `📊 **Current Score:** ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}\n` +
+          `⏳ **${gamesLeft}** more win(s) needed to complete the match.`,
+      });
+
+      console.log(
+        `[SCORE] Match #${match.match_number} (R${match.round}) score updated: ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}`,
+      );
+    }
+  } catch (err) {
+    console.error("[SCORE] Failed to record score:", err);
+    await interaction.editReply({
+      content: `❌ Failed to record score: ${err.message}`,
+    });
+  }
+}
+// ═════════════════════════════════════════════════════════════════
+//  DISQUALIFY MODAL SUBMIT
+// ═════════════════════════════════════════════════════════════════
+
+async function handleDqSubmit(interaction, encodedId) {
+  // encodedId format: "matchId:userId"
+  const [matchIdStr, targetUserId] = encodedId.split(":");
+
+  if (!targetUserId) {
+    return interaction.reply({
+      content: "❌ Invalid disqualification target.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const match = getMatchById(parseInt(matchIdStr, 10));
+  if (!match) {
+    return interaction.reply({
+      content: "❌ Match not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const tournament = getTournamentById(match.tournament_id);
+  if (!tournament) {
+    return interaction.reply({
+      content: "❌ Tournament not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const reason =
+    interaction.fields.getTextInputValue("reason").trim() ||
+    "No reason provided";
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const { disqualifyPlayer } = await import("../services/disqualifyService.js");
+  const result = await disqualifyPlayer(
+    interaction.guild,
+    tournament,
+    targetUserId,
+    reason,
+  );
+
+  await interaction.editReply({ content: result.message });
 }

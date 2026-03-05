@@ -1,11 +1,11 @@
 // ─── src/commands/admin/disqualify.js ────────────────────────────
 // /disqualify <user>  — Disqualify a participant from the tournament
 // whose channels the command is run in.
-// Full implementation in Stage 8.
 
 import { SlashCommandBuilder, MessageFlags } from "discord.js";
 import { isOrganizer } from "../../utils/permissions.js";
 import { findTournamentByContext } from "../../utils/helpers.js";
+import { disqualifyPlayer } from "../../services/disqualifyService.js";
 
 export const data = new SlashCommandBuilder()
   .setName("disqualify")
@@ -15,6 +15,13 @@ export const data = new SlashCommandBuilder()
       .setName("user")
       .setDescription("The user to disqualify")
       .setRequired(true),
+  )
+  .addStringOption((opt) =>
+    opt
+      .setName("reason")
+      .setDescription("Reason for disqualification")
+      .setRequired(false)
+      .setMaxLength(200),
   );
 
 /**
@@ -28,7 +35,6 @@ export async function execute(interaction) {
     });
   }
 
-  // ── Permission guard ──────────────────────────────────────
   if (!isOrganizer(interaction.member)) {
     return interaction.reply({
       content: "❌ Only organisers can disqualify participants.",
@@ -36,7 +42,7 @@ export async function execute(interaction) {
     });
   }
 
-  // ── Tournament context guard ──────────────────────────────
+  // ── Tournament context ─────────────────────────────────────
   const tournament = findTournamentByContext(
     interaction.channelId,
     interaction.channel?.parentId,
@@ -50,10 +56,17 @@ export async function execute(interaction) {
   }
 
   const targetUser = interaction.options.getUser("user", true);
+  const reason =
+    interaction.options.getString("reason") || "Disqualified by admin";
 
-  // Stage 8 will replace the line below with full disqualify logic
-  await interaction.reply({
-    content: `🚧 Disqualification of **${targetUser.tag}** from **${tournament.name}** — coming in Stage 8.`,
-    flags: MessageFlags.Ephemeral,
-  });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const result = await disqualifyPlayer(
+    interaction.guild,
+    tournament,
+    targetUser.id,
+    reason,
+  );
+
+  await interaction.editReply({ content: result.message });
 }

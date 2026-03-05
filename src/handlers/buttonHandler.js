@@ -1,5 +1,4 @@
 // ─── src/handlers/buttonHandler.js ───────────────────────────────
-// Routes button interactions by custom-ID prefix and executes logic.
 
 import {
   MessageFlags,
@@ -15,6 +14,8 @@ import { isOrganizer } from "../utils/permissions.js";
 import {
   getTournamentById,
   getActiveParticipantCount,
+  getMatchById,
+  getParticipant,
 } from "../database/queries.js";
 import {
   COLORS,
@@ -31,6 +32,11 @@ import {
   deleteTournamentInfrastructure,
   refreshAdminPanel,
 } from "../services/tournamentService.js";
+import {
+  registerParticipant,
+  unregisterParticipant,
+  registerSpectator,
+} from "../services/registrationService.js";
 
 /**
  * @param {import('discord.js').ButtonInteraction} interaction
@@ -64,7 +70,6 @@ export async function handleButton(interaction) {
 // ═════════════════════════════════════════════════════════════════
 
 async function handleAdminButton(interaction, action, tournamentId) {
-  // ── Permission check ───────────────────────────────────────
   if (!isOrganizer(interaction.member)) {
     return interaction.reply({
       content: "❌ Only organisers can use admin controls.",
@@ -72,7 +77,6 @@ async function handleAdminButton(interaction, action, tournamentId) {
     });
   }
 
-  // ── Fetch tournament ───────────────────────────────────────
   const tournament = getTournamentById(tournamentId);
   if (!tournament) {
     return interaction.reply({
@@ -102,8 +106,6 @@ async function handleAdminButton(interaction, action, tournamentId) {
   }
 }
 
-// ── Configure: show modal ────────────────────────────────────────
-
 async function showConfigureModal(interaction, tournament) {
   const status = tournament.status;
   if (
@@ -124,62 +126,60 @@ async function showConfigureModal(interaction, tournament) {
     .setCustomId(`modal_configure_${tournament.id}`)
     .setTitle("Configure Tournament");
 
-  const nameInput = new TextInputBuilder()
-    .setCustomId("tournament_name")
-    .setLabel("Tournament Name")
-    .setStyle(TextInputStyle.Short)
-    .setValue(tournament.name)
-    .setMinLength(2)
-    .setMaxLength(50)
-    .setRequired(true);
-
-  const maxPlayersInput = new TextInputBuilder()
-    .setCustomId("max_players")
-    .setLabel("Max Players (2–100)")
-    .setStyle(TextInputStyle.Short)
-    .setValue(`${tournament.max_players}`)
-    .setMinLength(1)
-    .setMaxLength(3)
-    .setRequired(true);
-
-  const teamSizeInput = new TextInputBuilder()
-    .setCustomId("team_size")
-    .setLabel("Team Size (1 = Solo, 2 = Duo)")
-    .setStyle(TextInputStyle.Short)
-    .setValue(`${tournament.team_size}`)
-    .setMinLength(1)
-    .setMaxLength(1)
-    .setRequired(true);
-
-  const bestOfInput = new TextInputBuilder()
-    .setCustomId("best_of")
-    .setLabel(`Best Of (${VALID_BEST_OF.join(" or ")})`)
-    .setStyle(TextInputStyle.Short)
-    .setValue(`${tournament.best_of}`)
-    .setMinLength(1)
-    .setMaxLength(1)
-    .setRequired(true);
-
-  const rulesInput = new TextInputBuilder()
-    .setCustomId("rules")
-    .setLabel("Rules (optional)")
-    .setStyle(TextInputStyle.Paragraph)
-    .setValue(tournament.rules || "")
-    .setMaxLength(1000)
-    .setRequired(false);
-
   modal.addComponents(
-    new ActionRowBuilder().addComponents(nameInput),
-    new ActionRowBuilder().addComponents(maxPlayersInput),
-    new ActionRowBuilder().addComponents(teamSizeInput),
-    new ActionRowBuilder().addComponents(bestOfInput),
-    new ActionRowBuilder().addComponents(rulesInput),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("tournament_name")
+        .setLabel("Tournament Name")
+        .setStyle(TextInputStyle.Short)
+        .setValue(tournament.name)
+        .setMinLength(2)
+        .setMaxLength(50)
+        .setRequired(true),
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("max_players")
+        .setLabel("Max Players (2–100)")
+        .setStyle(TextInputStyle.Short)
+        .setValue(`${tournament.max_players}`)
+        .setMinLength(1)
+        .setMaxLength(3)
+        .setRequired(true),
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("team_size")
+        .setLabel("Team Size (1 = Solo, 2 = Duo)")
+        .setStyle(TextInputStyle.Short)
+        .setValue(`${tournament.team_size}`)
+        .setMinLength(1)
+        .setMaxLength(1)
+        .setRequired(true),
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("best_of")
+        .setLabel(`Best Of (${VALID_BEST_OF.join(" or ")})`)
+        .setStyle(TextInputStyle.Short)
+        .setValue(`${tournament.best_of}`)
+        .setMinLength(1)
+        .setMaxLength(1)
+        .setRequired(true),
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("rules")
+        .setLabel("Rules (optional)")
+        .setStyle(TextInputStyle.Paragraph)
+        .setValue(tournament.rules || "")
+        .setMaxLength(1000)
+        .setRequired(false),
+    ),
   );
 
   await interaction.showModal(modal);
 }
-
-// ── Open Registration ────────────────────────────────────────────
 
 async function handleOpenReg(interaction, tournament) {
   if (
@@ -196,22 +196,16 @@ async function handleOpenReg(interaction, tournament) {
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
   try {
     await openRegistration(interaction.guild, tournament);
     await interaction.editReply({
-      content:
-        "✅ Registration is now **open**! Players can register in the registration channel.",
+      content: "✅ Registration is now **open**!",
     });
   } catch (err) {
     console.error("[OPENREG]", err);
-    await interaction.editReply({
-      content: `❌ Failed to open registration: ${err.message}`,
-    });
+    await interaction.editReply({ content: `❌ Failed: ${err.message}` });
   }
 }
-
-// ── Close Registration ───────────────────────────────────────────
 
 async function handleCloseReg(interaction, tournament) {
   if (tournament.status !== TOURNAMENT_STATUS.REGISTRATION_OPEN) {
@@ -222,7 +216,6 @@ async function handleCloseReg(interaction, tournament) {
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
   try {
     await closeRegistration(interaction.guild, tournament);
     await interaction.editReply({
@@ -230,13 +223,9 @@ async function handleCloseReg(interaction, tournament) {
     });
   } catch (err) {
     console.error("[CLOSEREG]", err);
-    await interaction.editReply({
-      content: `❌ Failed to close registration: ${err.message}`,
-    });
+    await interaction.editReply({ content: `❌ Failed: ${err.message}` });
   }
 }
-
-// ── Start Confirmation ───────────────────────────────────────────
 
 async function showStartConfirmation(interaction, tournament) {
   if (tournament.status !== TOURNAMENT_STATUS.REGISTRATION_CLOSED) {
@@ -249,7 +238,7 @@ async function showStartConfirmation(interaction, tournament) {
   const playerCount = getActiveParticipantCount(tournament.id);
   if (playerCount < 2) {
     return interaction.reply({
-      content: `❌ At least **2** participants are needed. Currently: **${playerCount}**.`,
+      content: `❌ At least **2** participants needed. Currently: **${playerCount}**.`,
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -286,12 +275,10 @@ async function showStartConfirmation(interaction, tournament) {
   });
 }
 
-// ── End Confirmation ─────────────────────────────────────────────
-
 async function showEndConfirmation(interaction, tournament) {
   if (tournament.status !== TOURNAMENT_STATUS.IN_PROGRESS) {
     return interaction.reply({
-      content: "❌ The tournament is not currently in progress.",
+      content: "❌ The tournament is not in progress.",
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -301,8 +288,7 @@ async function showEndConfirmation(interaction, tournament) {
     .setColor(COLORS.WARNING)
     .setDescription(
       `Are you sure you want to end **${tournament.name}**?\n\n` +
-        `All remaining matches will be **cancelled**.\n` +
-        `Final standings will be based on completed matches.`,
+        `All remaining matches will be **cancelled**.\nFinal standings based on completed matches.`,
     );
 
   const row = new ActionRowBuilder().addComponents(
@@ -323,8 +309,6 @@ async function showEndConfirmation(interaction, tournament) {
     flags: MessageFlags.Ephemeral,
   });
 }
-
-// ── Delete Confirmation ──────────────────────────────────────────
 
 async function showDeleteConfirmation(interaction, tournament) {
   const embed = new EmbedBuilder()
@@ -358,8 +342,7 @@ async function showDeleteConfirmation(interaction, tournament) {
 //  CONFIRMATION BUTTONS
 // ═════════════════════════════════════════════════════════════════
 
-async function handleConfirmButton(interaction, action, tournamentId) {
-  // ── Cancel any confirmation ────────────────────────────────
+async function handleConfirmButton(interaction, action, targetId) {
   if (action === "no") {
     return interaction.update({
       content: "❌ Action cancelled.",
@@ -368,11 +351,10 @@ async function handleConfirmButton(interaction, action, tournamentId) {
     });
   }
 
-  // ── Fetch tournament ───────────────────────────────────────
-  const tournament = getTournamentById(tournamentId);
+  const tournament = getTournamentById(targetId);
   if (!tournament) {
     return interaction.update({
-      content: "❌ Tournament not found. It may have been deleted.",
+      content: "❌ Tournament not found.",
       embeds: [],
       components: [],
     });
@@ -387,149 +369,340 @@ async function handleConfirmButton(interaction, action, tournamentId) {
       return executeDelete(interaction, tournament);
     default:
       await interaction.update({
-        content: "❓ Unknown confirmation action.",
+        content: "❓ Unknown action.",
         embeds: [],
         components: [],
       });
   }
 }
 
-// ── Execute Start ────────────────────────────────────────────────
-
 async function executeStart(interaction, tournament) {
-  // Show processing state
   await interaction.update({
     content: "⏳ Generating matches and starting tournament…",
     embeds: [],
     components: [],
   });
-
   try {
     await startTournament(interaction.guild, tournament);
-
     await interaction.editReply({
       content:
-        "✅ Tournament has **started**! Match threads will be created in the matches channel.",
+        "✅ Tournament has **started**! Match threads are being created.",
     });
   } catch (err) {
     console.error("[START]", err);
-    await interaction.editReply({
-      content: `❌ Failed to start tournament: ${err.message}`,
-    });
+    await interaction.editReply({ content: `❌ Failed: ${err.message}` });
   }
 }
-
-// ── Execute End ──────────────────────────────────────────────────
 
 async function executeEnd(interaction, tournament) {
   await interaction.update({
-    content: "⏳ Ending tournament and calculating results…",
+    content: "⏳ Ending tournament…",
     embeds: [],
     components: [],
   });
-
   try {
     await endTournament(interaction.guild, tournament);
-
-    await interaction.editReply({
-      content:
-        "✅ Tournament has **ended**! Final results have been posted in the notice channel.",
-    });
+    await interaction.editReply({ content: "✅ Tournament has **ended**!" });
   } catch (err) {
     console.error("[END]", err);
-    await interaction.editReply({
-      content: `❌ Failed to end tournament: ${err.message}`,
-    });
+    await interaction.editReply({ content: `❌ Failed: ${err.message}` });
   }
 }
 
-// ── Execute Delete ───────────────────────────────────────────────
-
 async function executeDelete(interaction, tournament) {
-  // Update the ephemeral message first — channel will be deleted
   await interaction.update({
     content: "⏳ Deleting tournament…",
     embeds: [],
     components: [],
   });
-
   try {
     await deleteTournamentInfrastructure(interaction.guild, tournament);
-
-    // Try to edit reply — may fail if channel is already gone
     try {
-      await interaction.editReply({
-        content: "✅ Tournament has been **deleted**.",
-      });
+      await interaction.editReply({ content: "✅ Tournament **deleted**." });
     } catch {
-      // Channel was deleted, ephemeral message is gone — that's fine
+      /* channel gone */
     }
   } catch (err) {
     console.error("[DELETE]", err);
     try {
-      await interaction.editReply({
-        content: `❌ Failed to delete tournament: ${err.message}`,
-      });
+      await interaction.editReply({ content: `❌ Failed: ${err.message}` });
     } catch {
-      // Channel gone — can't respond
+      /* channel gone */
     }
   }
 }
 
 // ═════════════════════════════════════════════════════════════════
-//  REGISTRATION BUTTONS  (Stage 5 stubs)
+//  REGISTRATION BUTTONS
 // ═════════════════════════════════════════════════════════════════
 
 async function handleRegButton(interaction, action, tournamentId) {
+  const tournament = getTournamentById(tournamentId);
+  if (!tournament) {
+    return interaction.reply({
+      content: "❌ Tournament not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  let member;
+  try {
+    member = await interaction.guild.members.fetch(interaction.user.id);
+  } catch {
+    return interaction.reply({
+      content: "❌ Could not fetch your profile.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  let result;
   switch (action) {
     case "register":
-      await interaction.reply({
-        content: "🚧 Register — Stage 5",
-        flags: MessageFlags.Ephemeral,
-      });
+      result = await registerParticipant(
+        interaction.guild,
+        tournament,
+        interaction.user,
+        member,
+      );
       break;
     case "unregister":
-      await interaction.reply({
-        content: "🚧 Unregister — Stage 5",
-        flags: MessageFlags.Ephemeral,
-      });
+      result = await unregisterParticipant(
+        interaction.guild,
+        tournament,
+        interaction.user,
+        member,
+      );
       break;
     case "spectate":
-      await interaction.reply({
-        content: "🚧 Spectate — Stage 5",
-        flags: MessageFlags.Ephemeral,
-      });
+      result = await registerSpectator(
+        interaction.guild,
+        tournament,
+        interaction.user,
+        member,
+      );
       break;
     default:
-      await interaction.reply({
-        content: "❓ Unknown registration action.",
-        flags: MessageFlags.Ephemeral,
-      });
+      return interaction.editReply({ content: "❓ Unknown action." });
   }
+
+  await interaction.editReply({ content: result.message });
 }
 
 // ═════════════════════════════════════════════════════════════════
-//  MATCH BUTTONS  (Stage 6 stubs)
+//  MATCH BUTTONS
 // ═════════════════════════════════════════════════════════════════
 
-async function handleMatchButton(interaction, action, matchId) {
+async function handleMatchButton(interaction, action, targetId) {
   switch (action) {
     case "score":
-      await interaction.reply({
-        content: "🚧 Add Score — Stage 6",
-        flags: MessageFlags.Ephemeral,
-      });
-      break;
+      return showScoreModal(interaction, targetId);
     case "dq":
-      await interaction.reply({
-        content: "🚧 Disqualify from match — Stage 6",
-        flags: MessageFlags.Ephemeral,
-      });
-      break;
+      return showDqPlayerSelect(interaction, targetId);
+    case "dqp":
+      return executeDqFromMatch(interaction, targetId);
     default:
       await interaction.reply({
         content: "❓ Unknown match action.",
         flags: MessageFlags.Ephemeral,
       });
   }
+}
+
+// ── Score Modal ──────────────────────────────────────────────────
+
+async function showScoreModal(interaction, matchId) {
+  if (!isOrganizer(interaction.member)) {
+    return interaction.reply({
+      content: "❌ Only organisers can record scores.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const match = getMatchById(parseInt(matchId, 10));
+  if (!match) {
+    return interaction.reply({
+      content: "❌ Match not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (match.status === "completed") {
+    return interaction.reply({
+      content: "❌ This match is already completed.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (match.status === "cancelled") {
+    return interaction.reply({
+      content: "❌ This match has been cancelled.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const tournament = getTournamentById(match.tournament_id);
+  if (!tournament) {
+    return interaction.reply({
+      content: "❌ Tournament not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const p1Data = getParticipant(tournament.id, match.player1_id);
+  const p2Data = getParticipant(tournament.id, match.player2_id);
+  const p1Name = p1Data?.display_name || p1Data?.username || "Player 1";
+  const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
+
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_score_${match.id}`)
+    .setTitle("Record Game Result");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("winner")
+        .setLabel(`Winner: 1 = ${p1Name}, 2 = ${p2Name}`)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder("Enter 1 or 2")
+        .setMinLength(1)
+        .setMaxLength(1)
+        .setRequired(true),
+    ),
+  );
+
+  await interaction.showModal(modal);
+}
+
+// ── DQ Player Select ─────────────────────────────────────────────
+
+async function showDqPlayerSelect(interaction, matchId) {
+  if (!isOrganizer(interaction.member)) {
+    return interaction.reply({
+      content: "❌ Only organisers can disqualify players.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const match = getMatchById(parseInt(matchId, 10));
+  if (!match) {
+    return interaction.reply({
+      content: "❌ Match not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (match.status === "completed" || match.status === "cancelled") {
+    return interaction.reply({
+      content: "❌ This match is already finished.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const tournament = getTournamentById(match.tournament_id);
+  if (!tournament) {
+    return interaction.reply({
+      content: "❌ Tournament not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const p1Data = getParticipant(tournament.id, match.player1_id);
+  const p2Data = getParticipant(tournament.id, match.player2_id);
+  const p1Name = p1Data?.display_name || p1Data?.username || "Player 1";
+  const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
+
+  const embed = new EmbedBuilder()
+    .setTitle("⛔ Disqualify Player")
+    .setColor(COLORS.DANGER)
+    .setDescription(
+      `Select which player to disqualify from **${tournament.name}**.\n\n` +
+        `⚠️ This will:\n` +
+        `• Mark them as disqualified\n` +
+        `• Forfeit ALL their remaining matches\n` +
+        `• Award wins to all their opponents\n` +
+        `• Remove their participant role\n\n` +
+        `**This cannot be undone!**`,
+    );
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`match_dqp_${match.id}:${match.player1_id}`)
+      .setLabel(`DQ ${p1Name}`)
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`match_dqp_${match.id}:${match.player2_id}`)
+      .setLabel(`DQ ${p2Name}`)
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`confirm_no_cancel`)
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  await interaction.reply({
+    embeds: [embed],
+    components: [row],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+// ── Execute DQ from Match — Show Reason Modal ────────────────────
+
+async function executeDqFromMatch(interaction, encodedId) {
+  if (!isOrganizer(interaction.member)) {
+    return interaction.reply({
+      content: "❌ Only organisers can disqualify players.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const [matchIdStr, targetUserId] = encodedId.split(":");
+
+  if (!targetUserId) {
+    return interaction.reply({
+      content: "❌ Invalid disqualification target.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const match = getMatchById(parseInt(matchIdStr, 10));
+  if (!match) {
+    return interaction.reply({
+      content: "❌ Match not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const tournament = getTournamentById(match.tournament_id);
+  if (!tournament) {
+    return interaction.reply({
+      content: "❌ Tournament not found.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const targetData = getParticipant(tournament.id, targetUserId);
+  const targetName =
+    targetData?.display_name || targetData?.username || "Unknown";
+
+  // Show modal for reason input
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_dq_${match.id}:${targetUserId}`)
+    .setTitle(`Disqualify ${targetName}`);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId("reason")
+        .setLabel("Reason for disqualification")
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder("e.g. Cheating, inactivity, rule violation…")
+        .setMaxLength(200)
+        .setRequired(true),
+    ),
+  );
+
+  await interaction.showModal(modal);
 }
