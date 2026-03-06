@@ -2,6 +2,10 @@
 
 A Discord bot for managing tournaments with brackets, leaderboards, and multiple tournament formats.
 
+## Invite Bot to your server
+
+[Click here to invite the bot to your server](https://discord.com/oauth2/authorize?client_id=1478606357941719040&permissions=8&integration_type=0&scope=bot)
+
 ## Features
 
 - Multiple tournament formats — Round Robin, Single Elimination, Double Elimination
