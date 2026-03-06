@@ -1,19 +1,17 @@
 // ─── src/database/init.js ────────────────────────────────────────
-// Bootstraps the SQLite database: creates the file/directory if needed,
-// enables WAL + foreign keys, and runs the schema migration.
-// Updated in Stage 2: added `rules` column to tournaments.
+// Bootstraps the SQLite database using better-sqlite3.
 
-import fs from "node:fs";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { DATABASE_PATH } from "../config.js";
+import fs from 'node:fs';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { DATABASE_PATH } from '../config.js';
 
-/** @type {DatabaseSync | null} */
+/** @type {import('better-sqlite3').Database | null} */
 let db = null;
 
 /**
  * Initialise (or re-open) the database and ensure all tables exist.
- * @returns {DatabaseSync}
+ * @returns {import('better-sqlite3').Database}
  */
 export function initializeDatabase() {
   const dir = path.dirname(DATABASE_PATH);
@@ -21,11 +19,11 @@ export function initializeDatabase() {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  db = new DatabaseSync(DATABASE_PATH);
+  db = new Database(DATABASE_PATH);
 
   // ── Pragmas ──────────────────────────────────────────────────
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA foreign_keys = ON");
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
 
   // ── Schema ───────────────────────────────────────────────────
   db.exec(`
@@ -43,7 +41,6 @@ export function initializeDatabase() {
       rules                     TEXT    DEFAULT '',
       status                    TEXT    NOT NULL DEFAULT 'created',
 
-      /* Discord IDs – filled after channel/role creation */
       category_id               TEXT,
       leaderboard_channel_id    TEXT,
       admin_channel_id          TEXT,
@@ -59,14 +56,12 @@ export function initializeDatabase() {
       participant_role_id       TEXT,
       spectator_role_id         TEXT,
 
-      /* Message IDs for editable embeds */
       leaderboard_message_id    TEXT,
       bracket_message_id        TEXT,
       participation_message_id  TEXT,
       admin_message_id          TEXT,
       registration_message_id   TEXT,
 
-      /* Round tracking */
       current_round             INTEGER NOT NULL DEFAULT 0,
       total_rounds              INTEGER NOT NULL DEFAULT 0,
 
@@ -144,19 +139,17 @@ export function initializeDatabase() {
       ON matches(tournament_id, status);
   `);
 
-  console.log("[DB] Database initialised successfully.");
+  console.log('[DB] Database initialised successfully.');
   return db;
 }
 
 /**
  * Return the active database handle.
- * @returns {DatabaseSync}
+ * @returns {import('better-sqlite3').Database}
  */
 export function getDatabase() {
   if (!db) {
-    throw new Error(
-      "Database not initialised. Call initializeDatabase() first.",
-    );
+    throw new Error('Database not initialised. Call initializeDatabase() first.');
   }
   return db;
 }
@@ -168,6 +161,6 @@ export function closeDatabase() {
   if (db) {
     db.close();
     db = null;
-    console.log("[DB] Database closed.");
+    console.log('[DB] Database closed.');
   }
 }

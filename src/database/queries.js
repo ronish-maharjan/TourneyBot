@@ -491,24 +491,14 @@ export function createMatchesBulk(matches) {
     VALUES (?, ?, ?, ?, ?)
   `);
 
-  db.exec("BEGIN");
-  try {
-    for (const m of matches) {
-      stmt.run(
-        m.tournamentId,
-        m.round,
-        m.matchNumber,
-        m.player1Id,
-        m.player2Id,
-      );
+  const insertMany = db.transaction((items) => {
+    for (const m of items) {
+      stmt.run(m.tournamentId, m.round, m.matchNumber, m.player1Id, m.player2Id);
     }
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
-}
+  });
 
+  insertMany(matches);
+}
 /**
  * Get a match by its auto-increment ID.
  */
