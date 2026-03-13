@@ -37,6 +37,8 @@ import {
   deleteTournament,
   createMatchesBulk,
   cancelAllPendingMatches,
+  getAvailableMatchesForRound,       
+  getRemainingMatchCountForRound,   
 } from "../database/queries.js";
 import { generateRoundRobinSchedule } from "./matchService.js";
 import { createMatchThreads } from "./threadService.js";
@@ -703,13 +705,14 @@ export async function startTournament(guild, tournament) {
   // ── Initial leaderboard (all players at 0 pts) ────────────
   await refreshLeaderboard(guild, fresh);
 
-  // ── Initial bracket (all matches pending) ──────────────────
-  await refreshBracket(guild, fresh);
-
-  // ── Launch first batch of available matches ────────────────
+  // ── Launch first round matches (changes status to in_progress) ─
   await launchAvailableMatches(guild, fresh);
 
-  return fresh;
+  // ── Bracket AFTER launching (so it shows LIVE status) ──────
+  const freshAfterLaunch = getTournamentById(tournament.id);
+  await refreshBracket(guild, freshAfterLaunch);
+
+  return freshAfterLaunch;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -729,21 +732,31 @@ export async function startTournament(guild, tournament) {
  * @returns {Promise<number>}  Number of threads created
  */
 export async function launchAvailableMatches(guild, tournament) {
-  const available = getAllAvailableMatches(tournament.id);
+  // Re-read for freshest current_round
+  const fresh        = getTournamentById(tournament.id);
+  const currentRound = fresh.current_round;
 
-  if (available.length === 0) {
-    console.log(
-      `[MATCH] No available matches to launch for "${tournament.name}"`,
-    );
+  if (currentRound <= 0) {
+    console.log(`[MATCH] No current round set for "${tournament.name}"`);
     return 0;
   }
 
-  // Deduplicate: a player should only appear in ONE new thread
-  // getAllAvailableMatches already excludes busy players, but a
-  // player could appear in multiple "available" rows.  We pick
-  // greedily: first-come-first-served by round then match_number.
+  const available = getAvailableMatchesForRound(tournament.id, currentRound);
+
+  if (available.length === 0) {
+    // Check if there are still in-progress matches this round
+    const remaining = getRemainingMatchCountForRound(tournament.id, currentRound);
+    if (remaining > 0) {
+      console.log(`[MATCH] Round ${currentRound}: ${remaining} match(es) still in progress, waiting…`);
+    } else {
+      console.log(`[MATCH] Round ${currentRound}: no matches to launch for "${tournament.name}"`);
+    }
+    return 0;
+  }
+
+  // Greedy: each player only gets ONE new thread
   const busyPlayers = new Set();
-  const toCreate = [];
+  const toCreate    = [];
 
   for (const match of available) {
     const p1Busy = busyPlayers.has(match.player1_id);
@@ -756,14 +769,10 @@ export async function launchAvailableMatches(guild, tournament) {
     }
   }
 
-  if (toCreate.length === 0) {
-    return 0;
-  }
+  if (toCreate.length === 0) return 0;
 
-  console.log(
-    `[MATCH] Launching ${toCreate.length} match thread(s) for "${tournament.name}"`,
-  );
-  const created = await createMatchThreads(guild, tournament, toCreate);
+  console.log(`[MATCH] Launching ${toCreate.length} thread(s) for Round ${currentRound} of "${tournament.name}"`);
+  const created = await createMatchThreads(guild, fresh, toCreate);
   return created;
 }
 

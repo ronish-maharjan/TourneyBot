@@ -863,3 +863,44 @@ export function cancelAllPendingMatches(tournamentId) {
     )
     .run(tournamentId);
 }
+
+/**
+ * Get pending matches for a SPECIFIC round where both players are free.
+ * @param {string} tournamentId
+ * @param {number} round
+ * @returns {object[]}
+ */
+export function getAvailableMatchesForRound(tournamentId, round) {
+  const db = getDatabase();
+  return db.prepare(`
+    SELECT m.* FROM matches m
+    WHERE m.tournament_id = ?
+      AND m.round = ?
+      AND m.status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1 FROM matches m2
+        WHERE m2.tournament_id = m.tournament_id
+          AND m2.status = 'in_progress'
+          AND (m2.player1_id = m.player1_id OR m2.player2_id = m.player1_id
+            OR m2.player1_id = m.player2_id OR m2.player2_id = m.player2_id)
+      )
+    ORDER BY m.match_number
+  `).all(tournamentId, round);
+}
+
+/**
+ * Count pending + in_progress matches in a specific round.
+ * @param {string} tournamentId
+ * @param {number} round
+ * @returns {number}
+ */
+export function getRemainingMatchCountForRound(tournamentId, round) {
+  const db = getDatabase();
+  const row = db.prepare(`
+    SELECT COUNT(*) as count FROM matches
+    WHERE tournament_id = ?
+      AND round = ?
+      AND status IN ('pending', 'in_progress')
+  `).get(tournamentId, round);
+  return row?.count ?? 0;
+}

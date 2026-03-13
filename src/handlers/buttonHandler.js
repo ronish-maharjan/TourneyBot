@@ -514,58 +514,50 @@ async function handleMatchButton(interaction, action, targetId) {
 
 async function showScoreModal(interaction, matchId) {
   if (!isOrganizer(interaction.member)) {
-    return interaction.reply({
-      content: "❌ Only organisers can record scores.",
-      flags: MessageFlags.Ephemeral,
-    });
+    return interaction.reply({ content: '❌ Only organisers can record scores.', flags: MessageFlags.Ephemeral });
   }
 
   const match = getMatchById(parseInt(matchId, 10));
   if (!match) {
-    return interaction.reply({
-      content: "❌ Match not found.",
-      flags: MessageFlags.Ephemeral,
-    });
+    return interaction.reply({ content: '❌ Match not found.', flags: MessageFlags.Ephemeral });
   }
 
-  if (match.status === "completed") {
-    return interaction.reply({
-      content: "❌ This match is already completed.",
-      flags: MessageFlags.Ephemeral,
-    });
+  if (match.status === 'completed') {
+    return interaction.reply({ content: '❌ This match is already completed.', flags: MessageFlags.Ephemeral });
   }
 
-  if (match.status === "cancelled") {
-    return interaction.reply({
-      content: "❌ This match has been cancelled.",
-      flags: MessageFlags.Ephemeral,
-    });
+  if (match.status === 'cancelled') {
+    return interaction.reply({ content: '❌ This match has been cancelled.', flags: MessageFlags.Ephemeral });
   }
 
   const tournament = getTournamentById(match.tournament_id);
   if (!tournament) {
-    return interaction.reply({
-      content: "❌ Tournament not found.",
-      flags: MessageFlags.Ephemeral,
-    });
+    return interaction.reply({ content: '❌ Tournament not found.', flags: MessageFlags.Ephemeral });
   }
 
   const p1Data = getParticipant(tournament.id, match.player1_id);
   const p2Data = getParticipant(tournament.id, match.player2_id);
-  const p1Name = p1Data?.display_name || p1Data?.username || "Player 1";
-  const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
+  const p1Name = p1Data?.display_name || p1Data?.username || 'Player 1';
+  const p2Name = p2Data?.display_name || p2Data?.username || 'Player 2';
+
+  // Truncate names to fit Discord's 45-char label limit
+  // Format: "1 = Name1, 2 = Name2" must fit in 45 chars
+  // Reserve 10 chars for "1 = " and ", 2 = " → 35 chars for both names
+  const maxNameLen = 15;
+  const short1 = p1Name.length > maxNameLen ? p1Name.substring(0, maxNameLen - 1) + '…' : p1Name;
+  const short2 = p2Name.length > maxNameLen ? p2Name.substring(0, maxNameLen - 1) + '…' : p2Name;
 
   const modal = new ModalBuilder()
     .setCustomId(`modal_score_${match.id}`)
-    .setTitle("Record Game Result");
+    .setTitle('Record Game Result');
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId("winner")
-        .setLabel(`Winner: 1 = ${p1Name}, 2 = ${p2Name}`)
+        .setCustomId('winner')
+        .setLabel(`1 = ${short1}, 2 = ${short2}`)
         .setStyle(TextInputStyle.Short)
-        .setPlaceholder("Enter 1 or 2")
+        .setPlaceholder(`Enter 1 for ${short1} or 2 for ${short2}`)
         .setMinLength(1)
         .setMaxLength(1)
         .setRequired(true),

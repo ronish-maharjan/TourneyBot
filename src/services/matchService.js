@@ -140,7 +140,7 @@ export async function processMatchCompletion(guild, tournament, match) {
     // ── 5. DM players about the result ─────────────────────────
     await dmMatchResult(guild, tournament, match);
 
-    // ── 6. Update round tracking ───────────────────────────────
+    // ── 6. Update round tracking + launch next matches ─────────
     await updateRoundTracking(guild, tournament, match);
 
     // ── 7. Check if entire tournament is complete ──────────────
@@ -149,22 +149,15 @@ export async function processMatchCompletion(guild, tournament, match) {
     if (tournamentDone) {
       await completeTournament(guild, tournament);
     } else {
-      // ── 8. Launch next available matches ─────────────────────
+      // ── 8. Refresh admin panel ───────────────────────────────
       const freshTournament = getTournamentById(tournament.id);
-      await launchAvailableMatches(guild, freshTournament);
-
-      // ── 9. Refresh admin panel ───────────────────────────────
       await refreshAdminPanel(guild, freshTournament);
     }
 
-    console.log(
-      `[MATCH] Post-match processing complete for Match #${match.match_number} (R${match.round})`,
-    );
+    console.log(`[MATCH] Post-match processing complete for Match #${match.match_number} (R${match.round})`);
+
   } catch (err) {
-    console.error(
-      `[MATCH] Post-match processing failed for match ${match.id}:`,
-      err,
-    );
+    console.error(`[MATCH] Post-match processing failed for match ${match.id}:`, err);
   }
 }
 
@@ -335,60 +328,78 @@ async function dmUser(guild, userId, embed) {
 }
 
 // ═════════════════════════════════════════════════════════════════
-//  4. UPDATE ROUND TRACKING
+//  4. UPDATE ROUND TRACKING + LAUNCH NEXT ROUND
 // ═════════════════════════════════════════════════════════════════
 
 /**
- * Check if the current round is complete; if so advance current_round
- * and send a round-completion notice.
+ * Check if the current round is complete; if so advance current_round,
+ * send a round-completion notice, and launch next round's matches.
  */
+
 async function updateRoundTracking(guild, tournament, match) {
   const roundDone = isRoundComplete(tournament.id, match.round);
 
-  if (!roundDone) return;
+  if (!roundDone) {
+    // Round not complete — but maybe more matches in this round can start
+    const freshTournament = getTournamentById(tournament.id);
+    const launched = await launchAvailableMatches(guild, freshTournament);
 
-  // Advance current_round
-  const newRound = match.round + 1;
+    // If new matches were launched, refresh bracket to show LIVE status
+    if (launched > 0) {
+      const afterLaunch = getTournamentById(tournament.id);
+      await refreshBracket(guild, afterLaunch);
+    }
+
+    return;
+  }
+
+  // ── Round is complete! ─────────────────────────────────────
   const freshTournament = getTournamentById(tournament.id);
-  const totalRounds = freshTournament.total_rounds;
+  const totalRounds     = freshTournament.total_rounds;
+  const newRound        = match.round + 1;
 
   if (newRound <= totalRounds) {
+    // Advance to next round
     updateTournamentRound(tournament.id, newRound, totalRounds);
 
     // Send round completion notice
     const leaderboard = getLeaderboard(tournament.id);
-    const top3 = leaderboard.slice(0, 3);
-    const medals = ["🥇", "🥈", "🥉"];
+    const top3        = leaderboard.slice(0, 3);
+    const medals      = ['🥇', '🥈', '🥉'];
 
-    let standings = "";
+    let standings = '';
     for (let i = 0; i < top3.length; i++) {
       const p = top3[i];
-      standings += `${medals[i]} <@${p.user_id}> — ${p.points} pts (${p.wins}W/${p.losses}L)\n`;
+      const dq = p.status === 'disqualified' ? ' *(DQ)*' : '';
+      standings += `${medals[i]} <@${p.user_id}>${dq} — ${p.points} pts (${p.wins}W/${p.losses}L)\n`;
     }
 
-    await sendTournamentNotice(
-      guild,
-      freshTournament,
-      new EmbedBuilder()
-        .setTitle(`🔄 Round ${match.round} Complete!`)
-        .setColor(COLORS.INFO)
-        .setDescription(
-          `All matches in **Round ${match.round}** are finished.\n\n` +
-            `**Current Standings (Top 3):**\n${standings}\n` +
-            `Starting **Round ${newRound}** of ${totalRounds}…`,
-        )
-        .setTimestamp(),
+    await sendTournamentNotice(guild, freshTournament, new EmbedBuilder()
+      .setTitle(`🔄 Round ${match.round} Complete!`)
+      .setColor(COLORS.INFO)
+      .setDescription(
+        `All matches in **Round ${match.round}** are finished.\n\n` +
+        `**Current Standings (Top 3):**\n${standings}\n` +
+        `Starting **Round ${newRound}** of ${totalRounds}…\n` +
+        `Match threads will appear shortly in <#${freshTournament.match_channel_id}>.`,
+      )
+      .setTimestamp(),
     );
 
-    console.log(
-      `[ROUND] Round ${match.round} complete for "${tournament.name}" — advancing to round ${newRound}`,
-    );
+    console.log(`[ROUND] Round ${match.round} complete for "${tournament.name}" — launching Round ${newRound}`);
+
+    // ── Launch next round's matches ──────────────────────────
+    const updatedTournament = getTournamentById(tournament.id);
+    await launchAvailableMatches(guild, updatedTournament);
+
+    // ── Refresh bracket AFTER new matches launched (shows LIVE) ─
+    const afterLaunch = getTournamentById(tournament.id);
+    await refreshBracket(guild, afterLaunch);
+
   } else {
-    // This was the last round — tournament will be completed by the caller
+    // This was the last round — tournament completion handled by caller
     updateTournamentRound(tournament.id, totalRounds, totalRounds);
-    console.log(
-      `[ROUND] Final round ${match.round} complete for "${tournament.name}"`,
-    );
+    console.log(`[ROUND] Final round ${match.round} complete for "${tournament.name}"`);
   }
 }
 

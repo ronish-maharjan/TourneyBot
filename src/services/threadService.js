@@ -358,13 +358,8 @@ async function notifyPlayer(
  * @param {boolean} isCompleted  If true, use completed embed + disable buttons
  * @param {string|null} winnerName
  */
-export async function updateMatchThreadEmbed(
-  guild,
-  tournament,
-  match,
-  isCompleted = false,
-  winnerName = null,
-) {
+
+export async function updateMatchThreadEmbed(guild, tournament, match, isCompleted = false, winnerName = null) {
   if (!match.thread_id || !match.score_message_id) return;
 
   try {
@@ -376,47 +371,117 @@ export async function updateMatchThreadEmbed(
 
     const p1Data = getParticipant(tournament.id, match.player1_id);
     const p2Data = getParticipant(tournament.id, match.player2_id);
-    const p1Name = p1Data?.display_name || p1Data?.username || "Player 1";
-    const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
+    const p1Name = p1Data?.display_name || p1Data?.username || 'Player 1';
+    const p2Name = p2Data?.display_name || p2Data?.username || 'Player 2';
 
     if (isCompleted) {
-      const embed = buildCompletedMatchEmbed(
-        tournament,
-        match,
-        p1Name,
-        p2Name,
-        winnerName || "Unknown",
-      );
+      const embed = buildCompletedMatchEmbed(tournament, match, p1Name, p2Name, winnerName || 'Unknown');
       const buttons = buildDisabledMatchButtons(match.id);
       await msg.edit({ embeds: [embed], components: [buttons] });
 
-      // Send completion message in thread
+      // ── Completion summary in thread ────────────────────────
+      const loserName = match.winner_id === match.player1_id ? p2Name : p1Name;
+
       await thread.send({
         embeds: [
           new EmbedBuilder()
-            .setTitle("🏆 Match Complete!")
-            .setDescription(`**${winnerName}** wins the match!`)
             .setColor(COLORS.SUCCESS)
+            .setDescription(
+              `## 🏆 Match Complete!\n\n` +
+              `**Winner:** ${winnerName}\n` +
+              `**Score:** ${p1Name} **${match.player1_score}** — **${match.player2_score}** ${p2Name}\n\n` +
+              `_This thread is now closed._`,
+            )
             .setTimestamp(),
         ],
       });
 
-      // Archive the thread
+      // ── Rename thread with status prefix ────────────────────
+      const isDq = winnerName?.includes('DQ') || winnerName?.includes('dq');
+      const prefix = isDq ? '⛔' : '✅ [FINISHED]';
+      const shortWinner = (winnerName || 'Unknown').substring(0, 20);
+      const newName = `${prefix} R${match.round}·M${match.match_number} — ${shortWinner} wins`;
+
       try {
-        await thread.setArchived(true, "Match completed");
-      } catch {
-        // May lack permissions to archive
+        await thread.setName(newName);
+      } catch (err) {
+        console.warn(`[THREAD] Could not rename thread:`, err.message);
       }
+
+      // ── Lock and archive ────────────────────────────────────
+      try {
+        await thread.setLocked(true, 'Match completed');
+        await thread.setArchived(true, 'Match completed');
+      } catch {
+        // May lack permissions
+      }
+
     } else {
+      // ── Match still in progress — update score ──────────────
       const embed = buildMatchEmbed(tournament, match, p1Name, p2Name);
       const buttons = buildMatchButtons(match.id);
       await msg.edit({ embeds: [embed], components: [buttons] });
     }
   } catch (err) {
-    console.warn(
-      `[THREAD] Could not update match thread embed for match ${match.id}:`,
-      err.message,
-    );
+    console.warn(`[THREAD] Could not update match thread for match ${match.id}:`, err.message);
+  }
+}
+
+/**
+ * Mark a thread as cancelled (for DQ scenarios where thread exists).
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {object} match
+ */
+export async function markThreadCancelled(guild, match) {
+  if (!match.thread_id) return;
+
+  try {
+    const thread = await guild.channels.fetch(match.thread_id);
+    if (!thread) return;
+
+    // Rename
+    const newName = `❌ R${match.round}·M${match.match_number} — Cancelled`;
+    try {
+      await thread.setName(newName);
+    } catch (err) {
+      console.warn('[THREAD] Could not rename cancelled thread:', err.message);
+    }
+
+    // Post cancellation notice
+    await thread.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(COLORS.DANGER)
+          .setDescription('## ❌ Match Cancelled\n\n_This match has been cancelled due to a disqualification._')
+          .setTimestamp(),
+      ],
+    });
+
+    // Disable buttons if score message exists
+    if (match.score_message_id) {
+      try {
+        const msg = await thread.messages.fetch(match.score_message_id);
+        if (msg) {
+          await msg.edit({
+            components: [buildDisabledMatchButtons(match.id)],
+          });
+        }
+      } catch {
+        // Message may not exist
+      }
+    }
+
+    // Lock and archive
+    try {
+      await thread.setLocked(true, 'Match cancelled');
+      await thread.setArchived(true, 'Match cancelled');
+    } catch {
+      // May lack permissions
+    }
+
+  } catch (err) {
+    console.warn(`[THREAD] Could not mark thread cancelled for match ${match.id}:`, err.message);
   }
 }
 
