@@ -551,14 +551,27 @@ export async function refreshBracket(guild, tournament) {
 
 /**
  * Send an embed to the tournament's notice channel.
+ * @param {import('discord.js').Guild} guild
+ * @param {object}       tournament
+ * @param {EmbedBuilder} embed
+ * @param {boolean}      pingEveryone  If true, pings @everyone
  */
-export async function sendTournamentNotice(guild, tournament, embed) {
+export async function sendTournamentNotice(guild, tournament, embed, pingEveryone = false) {
   if (!tournament.notice_channel_id) return;
   try {
     const channel = await guild.channels.fetch(tournament.notice_channel_id);
-    if (channel) await channel.send({ embeds: [embed] });
+    if (!channel) return;
+
+    const options = { embeds: [embed] };
+
+    if (pingEveryone) {
+      options.content = '@everyone';
+      options.allowedMentions = { parse: ['everyone'] };
+    }
+
+    await channel.send(options);
   } catch (err) {
-    console.warn("[NOTICE] Could not send notice:", err.message);
+    console.warn('[NOTICE] Could not send notice:', err.message);
   }
 }
 
@@ -576,18 +589,15 @@ export async function openRegistration(guild, tournament) {
   await refreshRegistrationMessage(guild, fresh);
   await refreshAdminPanel(guild, fresh);
 
-  await sendTournamentNotice(
-    guild,
-    fresh,
-    new EmbedBuilder()
-      .setTitle("📝 Registration Open!")
-      .setDescription(
-        `Registration for **${fresh.name}** is now open!\n` +
-          `Head to <#${fresh.registration_channel_id}> to sign up.`,
-      )
-      .setColor(COLORS.SUCCESS)
-      .setTimestamp(),
-  );
+  await sendTournamentNotice(guild, fresh, new EmbedBuilder()
+    .setTitle('📝 Registration Open!')
+    .setDescription(
+      `Registration for **${fresh.name}** is now open!\n` +
+      `Head to <#${fresh.registration_channel_id}> to sign up.`,
+    )
+    .setColor(COLORS.SUCCESS)
+    .setTimestamp(),
+  true);   // ← @everyone
 }
 
 /**
@@ -600,15 +610,12 @@ export async function closeRegistration(guild, tournament) {
   await refreshRegistrationMessage(guild, fresh);
   await refreshAdminPanel(guild, fresh);
 
-  await sendTournamentNotice(
-    guild,
-    fresh,
-    new EmbedBuilder()
-      .setTitle("🔒 Registration Closed")
-      .setDescription(`Registration for **${fresh.name}** is now closed.`)
-      .setColor(COLORS.WARNING)
-      .setTimestamp(),
-  );
+  await sendTournamentNotice(guild, fresh, new EmbedBuilder()
+    .setTitle('🔒 Registration Closed')
+    .setDescription(`Registration for **${fresh.name}** is now closed.`)
+    .setColor(COLORS.WARNING)
+    .setTimestamp(),
+  true);   // ← @everyone
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -678,22 +685,17 @@ export async function startTournament(guild, tournament) {
   await refreshRegistrationMessage(guild, fresh);
 
   // ── Notice ─────────────────────────────────────────────────
-  await sendTournamentNotice(
-    guild,
-    fresh,
-    new EmbedBuilder()
-      .setTitle("🚀 Tournament Started!")
-      .setDescription(
-        `**${fresh.name}** has begun!\n\n` +
-          `👥 **${participants.length}** participants\n` +
-          `⚔️ **${matches.length}** matches across **${totalRounds}** round(s)\n` +
-          `📋 Format: Round Robin · Best of ${fresh.best_of}\n\n` +
-          `Match threads are being created in <#${fresh.match_channel_id}>…`,
-      )
-      .setColor(COLORS.SUCCESS)
-      .setTimestamp(),
-  );
-
+  await sendTournamentNotice(guild, fresh, new EmbedBuilder()
+    .setTitle('🚀 Tournament Started!')
+    .setDescription(
+      `**${fresh.name}** has begun!\n\n` +
+      `👥 **${participants.length}** participants\n` +
+      `⚔️ **${matches.length}** matches across **${totalRounds}** round(s)\n` +
+      `📋 Format: Round Robin · Best of ${fresh.best_of}`,
+    )
+    .setColor(COLORS.SUCCESS)
+    .setTimestamp(),
+  true);   // ← @everyone
   console.log(
     `[TOURNAMENT] Started "${fresh.name}" — ${matches.length} matches, ${totalRounds} rounds`,
   );
@@ -828,7 +830,7 @@ export async function endTournament(guild, tournament) {
 
   // ── Refresh & notify ───────────────────────────────────────
   await refreshAdminPanel(guild, fresh);
-  await sendTournamentNotice(guild, fresh, resultsEmbed);
+  await sendTournamentNotice(guild, fresh, resultsEmbed,true);
 
   // ── DM all participants with final results ─────────────────
   const participants = getActiveParticipants(tournament.id);

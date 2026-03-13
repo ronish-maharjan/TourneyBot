@@ -376,3 +376,131 @@ async function switchToSpectator(guild, tournament, user, member) {
     message: `👁️ You have switched from participant to **spectator** for **${tournament.name}**.`,
   };
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  ADMIN REGISTER (bypasses registration-open check)
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Admin registers a user as a participant.
+ * Works when tournament is in: created, registration_open, registration_closed.
+ * Does NOT work after tournament has started or ended.
+ *
+ * @param {import('discord.js').Guild}       guild
+ * @param {object}                           tournament   DB row
+ * @param {import('discord.js').User}        user
+ * @param {import('discord.js').GuildMember} member
+ * @returns {Promise<{ success: boolean, message: string }>}
+ */
+export async function adminRegisterParticipant(guild, tournament, user, member) {
+  // ── Status check (more lenient than normal registration) ───
+  const blockedStatuses = [
+    TOURNAMENT_STATUS.IN_PROGRESS,
+    TOURNAMENT_STATUS.COMPLETED,
+    TOURNAMENT_STATUS.CANCELLED,
+  ];
+
+  if (blockedStatuses.includes(tournament.status)) {
+    return {
+      success: false,
+      message: '❌ Cannot register players after the tournament has started or ended.',
+    };
+  }
+
+  // ── Already registered check ───────────────────────────────
+  const existing = getParticipant(tournament.id, user.id);
+
+  if (existing) {
+    if (existing.role === PARTICIPANT_ROLE.SPECTATOR) {
+      // Switch spectator to participant
+      const currentCount = getParticipantCount(tournament.id);
+      if (currentCount >= tournament.max_players) {
+        return {
+          success: false,
+          message: `❌ Tournament is full (**${tournament.max_players}** max players).`,
+        };
+      }
+
+      try {
+        updateParticipantRole(tournament.id, user.id, PARTICIPANT_ROLE.PARTICIPANT);
+      } catch (err) {
+        console.error('[ADMIN-REG] Role switch failed:', err.message);
+        return { success: false, message: '❌ Failed to switch role. Please try again.' };
+      }
+
+      // Swap Discord roles
+      try {
+        if (tournament.participant_role_id) {
+          await member.roles.add(tournament.participant_role_id, `Admin registered for ${tournament.name}`);
+        }
+        if (tournament.spectator_role_id && member.roles.cache.has(tournament.spectator_role_id)) {
+          await member.roles.remove(tournament.spectator_role_id, `Switched to participant for ${tournament.name}`);
+        }
+      } catch (err) {
+        console.warn('[ADMIN-REG] Could not swap roles:', err.message);
+      }
+
+      const fresh = getTournamentById(tournament.id);
+      await refreshParticipationList(guild, fresh);
+      if (fresh.status === TOURNAMENT_STATUS.REGISTRATION_OPEN) {
+        await refreshRegistrationMessage(guild, fresh);
+      }
+
+      const newCount = getParticipantCount(tournament.id);
+      return {
+        success: true,
+        message: `✅ **${user.username}** switched from spectator to **participant**. (${newCount}/${tournament.max_players})`,
+      };
+    }
+
+    return {
+      success: false,
+      message: `❌ **${user.username}** is already registered as a participant.`,
+    };
+  }
+
+  // ── Max players check ──────────────────────────────────────
+  const currentCount = getParticipantCount(tournament.id);
+  if (currentCount >= tournament.max_players) {
+    return {
+      success: false,
+      message: `❌ Tournament is full (**${tournament.max_players}** max players).`,
+    };
+  }
+
+  // ── Insert into database ───────────────────────────────────
+  try {
+    addParticipant({
+      tournamentId: tournament.id,
+      userId:       user.id,
+      username:     user.username,
+      displayName:  member.displayName || user.displayName || user.username,
+      role:         PARTICIPANT_ROLE.PARTICIPANT,
+    });
+  } catch (err) {
+    console.error('[ADMIN-REG] DB insert failed:', err.message);
+    return { success: false, message: '❌ Registration failed. Please try again.' };
+  }
+
+  // ── Assign participant role ────────────────────────────────
+  try {
+    if (tournament.participant_role_id) {
+      await member.roles.add(tournament.participant_role_id, `Admin registered for ${tournament.name}`);
+    }
+  } catch (err) {
+    console.warn('[ADMIN-REG] Could not assign role:', err.message);
+  }
+
+  // ── Refresh embeds ─────────────────────────────────────────
+  const fresh = getTournamentById(tournament.id);
+  await refreshParticipationList(guild, fresh);
+  if (fresh.status === TOURNAMENT_STATUS.REGISTRATION_OPEN) {
+    await refreshRegistrationMessage(guild, fresh);
+  }
+
+  const newCount = getParticipantCount(tournament.id);
+  return {
+    success: true,
+    message: `✅ **${user.username}** has been registered for **${tournament.name}** by admin. (${newCount}/${tournament.max_players})`,
+  };
+}
