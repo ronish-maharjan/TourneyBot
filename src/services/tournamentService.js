@@ -98,7 +98,10 @@ function buildChatPerms({ guildId, botId, participantRoleId }) {
   ];
 }
 
-function buildMatchPerms({ guildId, botId, participantRoleId }) {
+/**
+ * Match channel: everyone can view, participants AND spectators can send in threads.
+ */
+function buildMatchPerms({ guildId, botId, participantRoleId, spectatorRoleId }) {
   return [
     {
       id: guildId,
@@ -116,7 +119,14 @@ function buildMatchPerms({ guildId, botId, participantRoleId }) {
       id: participantRoleId,
       allow: [PermissionFlagsBits.SendMessagesInThreads],
     },
-    { id: botId, allow: BOT_CHANNEL_PERMS },
+    {
+      id: spectatorRoleId,
+      allow: [PermissionFlagsBits.SendMessagesInThreads],
+    },
+    {
+      id: botId,
+      allow: BOT_CHANNEL_PERMS,
+    },
   ];
 }
 
