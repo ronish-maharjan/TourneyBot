@@ -571,34 +571,27 @@ async function showScoreModal(interaction, matchId) {
 
 async function showDqPlayerSelect(interaction, matchId) {
     if (!isOrganizer(interaction.member)) {
-        return interaction.reply({
-            content: "❌ Only organisers can disqualify players.",
-            flags: MessageFlags.Ephemeral,
-        });
+        return interaction.reply({ content: '❌ Only organisers can disqualify players.', flags: MessageFlags.Ephemeral });
     }
 
     const match = getMatchById(parseInt(matchId, 10));
     if (!match) {
-        return interaction.reply({
-            content: "❌ Match not found.",
-            flags: MessageFlags.Ephemeral,
-        });
+        return interaction.reply({ content: '❌ Match not found.', flags: MessageFlags.Ephemeral });
     }
 
-    if (match.status === "completed" || match.status === "cancelled") {
-        return interaction.reply({
-            content: "❌ This match is already finished.",
-            flags: MessageFlags.Ephemeral,
-        });
+    if (match.status === 'completed' || match.status === 'cancelled') {
+        return interaction.reply({ content: '❌ This match is already finished.', flags: MessageFlags.Ephemeral });
     }
 
     const tournament = getTournamentById(match.tournament_id);
     if (!tournament) {
-        return interaction.reply({
-            content: "❌ Tournament not found.",
-            flags: MessageFlags.Ephemeral,
-        });
+        return interaction.reply({ content: '❌ Tournament not found.', flags: MessageFlags.Ephemeral });
     }
+
+    const p1Data = getParticipant(tournament.id, match.player1_id);
+    const p2Data = getParticipant(tournament.id, match.player2_id);
+    const p1Name = p1Data?.display_name || p1Data?.username || 'Player 1';
+    const p2Name = p2Data?.display_name || p2Data?.username || 'Player 2';
 
     const p1Short = p1Name.length > 20 ? p1Name.substring(0, 19) + '…' : p1Name;
     const p2Short = p2Name.length > 20 ? p2Name.substring(0, 19) + '…' : p2Name;
@@ -635,7 +628,6 @@ async function showDqPlayerSelect(interaction, matchId) {
 
     await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
 }
-
 // ── Execute DQ from Match — Show Reason Modal ────────────────────
 
 async function executeDqFromMatch(interaction, encodedId) {

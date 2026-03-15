@@ -1,6 +1,8 @@
 // ─── src/services/tournamentService.js ───────────────────────────
 // Core service for tournament lifecycle: creation, config, registration,
 // start, end, delete — and all the embed/message helpers.
+import { generateId, formatStatus, safeFetchMessage } from '../utils/helpers.js';
+
 import {
   ChannelType,
   PermissionFlagsBits,
@@ -44,7 +46,6 @@ import { generateRoundRobinSchedule } from "./matchService.js";
 import { createMatchThreads } from "./threadService.js";
 import { generateLeaderboardImage } from "../canvas/leaderboard.js";
 import { generateBracketImage } from "../canvas/bracket.js";
-import { generateId, formatStatus } from "../utils/helpers.js";
 
 // ── Bot permission set reused for every channel ──────────────────
 const BOT_CHANNEL_PERMS = [
@@ -268,16 +269,27 @@ export function buildAdminPanel(tournament) {
  */
 export async function refreshAdminPanel(guild, tournament) {
   if (!tournament.admin_channel_id || !tournament.admin_message_id) return;
+
   try {
-    const channel = await guild.channels.fetch(tournament.admin_channel_id);
-    if (!channel) return;
-    const message = await channel.messages.fetch(tournament.admin_message_id);
-    if (!message) return;
+    const result = await safeFetchMessage(guild, tournament.admin_channel_id, tournament.admin_message_id);
+    if (!result) return;
+
     const fresh = getTournamentById(tournament.id);
     if (!fresh) return;
-    await message.edit(buildAdminPanel(fresh));
+
+    const panel = buildAdminPanel(fresh);
+
+    if (result.message) {
+      // Message exists — edit it
+      await result.message.edit(panel);
+    } else {
+      // Message was deleted — send new one and store ID
+      const newMsg = await result.channel.send(panel);
+      updateTournamentMessageId(tournament.id, 'admin_message_id', newMsg.id);
+      console.log('[ADMIN] Admin panel message was deleted — recreated');
+    }
   } catch (err) {
-    console.warn("[ADMIN] Could not refresh admin panel:", err.message);
+    console.warn('[ADMIN] Could not refresh admin panel:', err.message);
   }
 }
 
@@ -285,26 +297,16 @@ export async function refreshAdminPanel(guild, tournament) {
 //  REGISTRATION MESSAGE
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * Edit the registration-channel message based on current status.
- */
 export async function refreshRegistrationMessage(guild, tournament) {
-  if (
-    !tournament.registration_channel_id ||
-    !tournament.registration_message_id
-  )
-    return;
+  if (!tournament.registration_channel_id || !tournament.registration_message_id) return;
+
   try {
-    const channel = await guild.channels.fetch(
-      tournament.registration_channel_id,
-    );
-    if (!channel) return;
-    const message = await channel.messages.fetch(
-      tournament.registration_message_id,
-    );
-    if (!message) return;
+    const result = await safeFetchMessage(guild, tournament.registration_channel_id, tournament.registration_message_id);
+    if (!result) return;
 
     const isOpen = tournament.status === TOURNAMENT_STATUS.REGISTRATION_OPEN;
+
+    let payload;
 
     if (isOpen) {
       const count = getParticipantCount(tournament.id);
@@ -312,70 +314,57 @@ export async function refreshRegistrationMessage(guild, tournament) {
       const embed = new EmbedBuilder()
         .setTitle(`📋 Registration — ${safeName}`)
         .setColor(COLORS.SUCCESS)
-        .setDescription(
-          "Click a button below to register, unregister, or become a spectator!",
-        )
+        .setDescription('Click a button below to register, unregister, or become a spectator!')
         .addFields(
-          { name: "Status", value: "📝 Open", inline: true },
-          {
-            name: "Players",
-            value: `${count} / ${tournament.max_players}`,
-            inline: true,
-          },
-          {
-            name: "Team Size",
-            value: tournament.team_size === 1 ? "Solo" : "Duo",
-            inline: true,
-          },
-          { name: "Format", value: "Round Robin", inline: true },
-          { name: "Best Of", value: `${tournament.best_of}`, inline: true },
+          { name: 'Status',    value: '📝 Open',                                       inline: true },
+          { name: 'Players',   value: `${count} / ${tournament.max_players}`,           inline: true },
+          { name: 'Team Size', value: tournament.team_size === 1 ? 'Solo' : 'Duo',      inline: true },
+          { name: 'Format',    value: 'Round Robin',                                     inline: true },
+          { name: 'Best Of',   value: `${tournament.best_of}`,                           inline: true },
         )
         .setTimestamp();
-
-      if (tournament.rules?.trim()) {
-        embed.addFields({
-          name: "📜 Rules",
-          value: tournament.rules.substring(0, 1024),
-        });
-      }
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`reg_register_${tournament.id}`)
-          .setLabel("Register")
-          .setEmoji("✅")
+          .setLabel('Register')
+          .setEmoji('✅')
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(`reg_unregister_${tournament.id}`)
-          .setLabel("Unregister")
-          .setEmoji("❌")
+          .setLabel('Unregister')
+          .setEmoji('❌')
           .setStyle(ButtonStyle.Danger),
         new ButtonBuilder()
           .setCustomId(`reg_spectate_${tournament.id}`)
-          .setLabel("Spectate")
-          .setEmoji("👁️")
+          .setLabel('Spectate')
+          .setEmoji('👁️')
           .setStyle(ButtonStyle.Secondary),
       );
 
-      await message.edit({ embeds: [embed], components: [row] });
+      payload = { embeds: [embed], components: [row] };
     } else {
       const count = getParticipantCount(tournament.id);
       const safeName = tournament.name.length > 30 ? tournament.name.substring(0, 29) + '…' : tournament.name;
       const embed = new EmbedBuilder()
         .setTitle(`📋 Registration — ${safeName}`)
         .setColor(COLORS.DANGER)
-        .setDescription("Registration is now **closed**.")
-        .addFields({
-          name: "Registered Players",
-          value: `${count}`,
-          inline: true,
-        })
+        .setDescription('Registration is now **closed**.')
+        .addFields({ name: 'Registered Players', value: `${count}`, inline: true })
         .setTimestamp();
 
-      await message.edit({ embeds: [embed], components: [] });
+      payload = { embeds: [embed], components: [] };
+    }
+
+    if (result.message) {
+      await result.message.edit(payload);
+    } else {
+      const newMsg = await result.channel.send(payload);
+      updateTournamentMessageId(tournament.id, 'registration_message_id', newMsg.id);
+      console.log('[REG] Registration message was deleted — recreated');
     }
   } catch (err) {
-    console.warn("[REG] Could not refresh registration message:", err.message);
+    console.warn('[REG] Could not refresh registration message:', err.message);
   }
 }
 
@@ -387,36 +376,27 @@ export async function refreshRegistrationMessage(guild, tournament) {
  * Edit the participation-channel message with current player list.
  */
 export async function refreshParticipationList(guild, tournament) {
-  if (
-    !tournament.participation_channel_id ||
-    !tournament.participation_message_id
-  )
-    return;
+  if (!tournament.participation_channel_id || !tournament.participation_message_id) return;
+
   try {
-    const channel = await guild.channels.fetch(
-      tournament.participation_channel_id,
-    );
-    if (!channel) return;
-    const message = await channel.messages.fetch(
-      tournament.participation_message_id,
-    );
-    if (!message) return;
+    const result = await safeFetchMessage(guild, tournament.participation_channel_id, tournament.participation_message_id);
+    if (!result) return;
 
     const participants = getActiveParticipants(tournament.id);
-    const spectators = getSpectators(tournament.id);
-    const safeName = tournament.name.length > 30 ? tournament.name.substring(0, 29) + '…' : tournament.name;
+    const spectators   = getSpectators(tournament.id);
 
+    const safeName = tournament.name.length > 30 ? tournament.name.substring(0, 29) + '…' : tournament.name;
     const embed = new EmbedBuilder()
       .setTitle(`👥 Participants — ${safeName}`)
       .setColor(COLORS.INFO)
       .setTimestamp();
 
     if (participants.length === 0) {
-      embed.setDescription("No participants registered yet.");
+      embed.setDescription('No participants registered yet.');
     } else {
       const list = participants
         .map((p, i) => `**${i + 1}.** <@${p.user_id}> (${p.username})`)
-        .join("\n");
+        .join('\n');
       embed.addFields({
         name: `Participants (${participants.length}/${tournament.max_players})`,
         value: list.substring(0, 1024),
@@ -424,16 +404,22 @@ export async function refreshParticipationList(guild, tournament) {
     }
 
     if (spectators.length > 0) {
-      const sList = spectators.map((s) => `<@${s.user_id}>`).join(", ");
+      const sList = spectators.map(s => `<@${s.user_id}>`).join(', ');
       embed.addFields({
         name: `Spectators (${spectators.length})`,
         value: sList.substring(0, 1024),
       });
     }
 
-    await message.edit({ embeds: [embed] });
+    if (result.message) {
+      await result.message.edit({ embeds: [embed] });
+    } else {
+      const newMsg = await result.channel.send({ embeds: [embed] });
+      updateTournamentMessageId(tournament.id, 'participation_message_id', newMsg.id);
+      console.log('[PARTICIPATION] Message was deleted — recreated');
+    }
   } catch (err) {
-    console.warn("[PARTICIPATION] Could not refresh:", err.message);
+    console.warn('[PARTICIPATION] Could not refresh:', err.message);
   }
 }
 
@@ -442,59 +428,35 @@ export async function refreshParticipationList(guild, tournament) {
 // ═════════════════════════════════════════════════════════════════
 
 export async function refreshLeaderboard(guild, tournament) {
-  if (
-    !tournament.leaderboard_channel_id ||
-    !tournament.leaderboard_message_id
-  ) {
-    console.log("[LEADERBOARD] No channel/message ID — skipping");
-    return;
-  }
+  if (!tournament.leaderboard_channel_id || !tournament.leaderboard_message_id) return;
 
   try {
-    const channel = await guild.channels.fetch(
-      tournament.leaderboard_channel_id,
-    );
-    if (!channel) {
-      console.log("[LEADERBOARD] Channel not found");
-      return;
-    }
-
-    const message = await channel.messages.fetch(
-      tournament.leaderboard_message_id,
-    );
-    if (!message) {
-      console.log("[LEADERBOARD] Message not found");
-      return;
-    }
+    const result = await safeFetchMessage(guild, tournament.leaderboard_channel_id, tournament.leaderboard_message_id);
+    if (!result) return;
 
     const leaderboard = getLeaderboard(tournament.id);
-    const completed = getCompletedMatchCount(tournament.id);
-    const total = getTotalMatchCount(tournament.id);
+    const completed   = getCompletedMatchCount(tournament.id);
+    const total       = getTotalMatchCount(tournament.id);
 
-    console.log(
-      `[LEADERBOARD] Generating image: ${leaderboard.length} players, ${completed}/${total} matches`,
-    );
+    const buffer     = generateLeaderboardImage(tournament, leaderboard, completed, total);
+    const attachment = new AttachmentBuilder(buffer, { name: 'leaderboard.png' });
 
-    const buffer = generateLeaderboardImage(
-      tournament,
-      leaderboard,
-      completed,
-      total,
-    );
-    const attachment = new AttachmentBuilder(buffer, {
-      name: "leaderboard.png",
-    });
-
-    await message.edit({
-      content: "",
+    const payload = {
+      content: '',
       embeds: [],
       files: [attachment],
       attachments: [],
-    });
+    };
 
-    console.log("[LEADERBOARD] Image updated successfully");
+    if (result.message) {
+      await result.message.edit(payload);
+    } else {
+      const newMsg = await result.channel.send(payload);
+      updateTournamentMessageId(tournament.id, 'leaderboard_message_id', newMsg.id);
+      console.log('[LEADERBOARD] Message was deleted — recreated');
+    }
   } catch (err) {
-    console.error("[LEADERBOARD] Error refreshing:", err);
+    console.error('[LEADERBOARD] Could not refresh:', err.message);
   }
 }
 
@@ -503,23 +465,11 @@ export async function refreshLeaderboard(guild, tournament) {
 // ═════════════════════════════════════════════════════════════════
 
 export async function refreshBracket(guild, tournament) {
-  if (!tournament.bracket_channel_id || !tournament.bracket_message_id) {
-    console.log("[BRACKET] No channel/message ID — skipping");
-    return;
-  }
+  if (!tournament.bracket_channel_id || !tournament.bracket_message_id) return;
 
   try {
-    const channel = await guild.channels.fetch(tournament.bracket_channel_id);
-    if (!channel) {
-      console.log("[BRACKET] Channel not found");
-      return;
-    }
-
-    const message = await channel.messages.fetch(tournament.bracket_message_id);
-    if (!message) {
-      console.log("[BRACKET] Message not found");
-      return;
-    }
+    const result = await safeFetchMessage(guild, tournament.bracket_channel_id, tournament.bracket_message_id);
+    if (!result) return;
 
     const allMatches = getMatchesByTournament(tournament.id);
     const matchesByRound = {};
@@ -528,36 +478,34 @@ export async function refreshBracket(guild, tournament) {
       matchesByRound[m.round].push(m);
     }
 
-    const participants = getParticipantsByTournament(tournament.id);
+    const participants   = getParticipantsByTournament(tournament.id);
     const participantMap = new Map();
     for (const p of participants) {
       participantMap.set(p.user_id, {
         display_name: p.display_name,
-        username: p.username,
+        username:     p.username,
       });
     }
 
-    console.log(
-      `[BRACKET] Generating image: ${allMatches.length} matches, ${Object.keys(matchesByRound).length} rounds`,
-    );
+    const buffer     = generateBracketImage(tournament, matchesByRound, participantMap);
+    const attachment = new AttachmentBuilder(buffer, { name: 'bracket.png' });
 
-    const buffer = generateBracketImage(
-      tournament,
-      matchesByRound,
-      participantMap,
-    );
-    const attachment = new AttachmentBuilder(buffer, { name: "bracket.png" });
-
-    await message.edit({
-      content: "",
+    const payload = {
+      content: '',
       embeds: [],
       files: [attachment],
       attachments: [],
-    });
+    };
 
-    console.log("[BRACKET] Image updated successfully");
+    if (result.message) {
+      await result.message.edit(payload);
+    } else {
+      const newMsg = await result.channel.send(payload);
+      updateTournamentMessageId(tournament.id, 'bracket_message_id', newMsg.id);
+      console.log('[BRACKET] Message was deleted — recreated');
+    }
   } catch (err) {
-    console.error("[BRACKET] Error refreshing:", err);
+    console.error('[BRACKET] Could not refresh:', err.message);
   }
 }
 
@@ -1290,5 +1238,26 @@ export async function createTournamentInfrastructure(
       /* ignore */
     }
     throw error;
+  }
+}
+
+export async function refreshRules(guild, tournament) {
+  if (!tournament.rules_channel_id || !tournament.rules_message_id) return;
+
+  try {
+    const result = await safeFetchMessage(guild, tournament.rules_channel_id, tournament.rules_message_id);
+    if (!result) return;
+
+    const embed = buildRulesEmbed(tournament.name, tournament.rules);
+
+    if (result.message) {
+      await result.message.edit({ embeds: [embed] });
+    } else {
+      const newMsg = await result.channel.send({ embeds: [embed] });
+      updateTournamentMessageId(tournament.id, 'rules_message_id', newMsg.id);
+      console.log('[RULES] Message was deleted — recreated');
+    }
+  } catch (err) {
+    console.warn('[RULES] Could not refresh rules:', err.message);
   }
 }

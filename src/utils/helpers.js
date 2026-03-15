@@ -150,3 +150,32 @@ export function ordinal(n) {
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  SAFE MESSAGE OPERATIONS
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Safely fetch a message from a channel.
+ * Returns null if channel or message doesn't exist.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {string} channelId
+ * @param {string} messageId
+ * @returns {Promise<{ channel: import('discord.js').TextChannel, message: import('discord.js').Message } | null>}
+ */
+export async function safeFetchMessage(guild, channelId, messageId) {
+  if (!channelId || !messageId) return null;
+
+  try {
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel) return null;
+
+    const message = await channel.messages.fetch(messageId).catch(() => null);
+    if (!message) return { channel, message: null };
+
+    return { channel, message };
+  } catch {
+    return null;
+  }
+}
