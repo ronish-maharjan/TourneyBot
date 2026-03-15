@@ -179,3 +179,21 @@ export async function safeFetchMessage(guild, channelId, messageId) {
     return null;
   }
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  SAFE PIN
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Safely pin a message. Silently fails if no permission or already pinned.
+ * @param {import('discord.js').Message} message
+ */
+export async function safePin(message) {
+  try {
+    if (!message.pinned) {
+      await message.pin();
+    }
+  } catch (err) {
+    console.warn('[PIN] Could not pin message:', err.message);
+  }
+}
