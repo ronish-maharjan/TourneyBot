@@ -64,9 +64,11 @@ export async function createMatchThread(guild, tournament, match) {
     const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
 
     // ── 3. Create thread ───────────────────────────────────────
-    const threadName = `Round ${match.round} — Match ${match.match_number}`;
+    const short1 = p1Name.length > 20 ? p1Name.substring(0, 19) + '…' : p1Name;
+    const short2 = p2Name.length > 20 ? p2Name.substring(0, 19) + '…' : p2Name;
+    const threadName = `⚔️ R${match.round}·M${match.match_number} — ${short1} vs ${short2}`;
     const thread = await matchChannel.threads.create({
-      name: threadName,
+      name: threadName.substring(0, 100),
       type: ChannelType.PublicThread,
       reason: `Match: ${p1Name} vs ${p2Name}`,
     });
@@ -167,26 +169,26 @@ export async function createMatchThreads(guild, tournament, matches) {
 export function buildMatchEmbed(tournament, match, p1Name, p2Name) {
   const bestOf = tournament.best_of;
 
+  const short1 = p1Name.length > 25 ? p1Name.substring(0, 24) + '…' : p1Name;
+  const short2 = p2Name.length > 25 ? p2Name.substring(0, 24) + '…' : p2Name;
+
   const embed = new EmbedBuilder()
-    .setTitle(`⚔️ ${p1Name}  vs  ${p2Name}`)
+    .setTitle(`⚔️ ${short1}  vs  ${short2}`)
     .setColor(COLORS.WARNING)
     .addFields(
-      { name: "Tournament", value: tournament.name, inline: true },
-      { name: "Round", value: `${match.round}`, inline: true },
-      { name: "Match #", value: `${match.match_number}`, inline: true },
-      { name: "Best Of", value: `${bestOf}`, inline: true },
-      { name: "Status", value: "🟡 In Progress", inline: true },
+      { name: 'Tournament', value: tournament.name,             inline: true },
+      { name: 'Round',      value: `${match.round}`,            inline: true },
+      { name: 'Match #',    value: `${match.match_number}`,     inline: true },
+      { name: 'Best Of',    value: `${bestOf}`,                 inline: true },
+      { name: 'Status',     value: '🟡 In Progress',             inline: true },
     )
-    .addFields({
-      name: "📊 Score",
-      value: formatScore(
-        p1Name,
-        match.player1_score,
-        p2Name,
-        match.player2_score,
-      ),
-      inline: false,
-    })
+    .addFields(
+      {
+        name: '📊 Score',
+        value: formatScore(p1Name, match.player1_score, p2Name, match.player2_score),
+        inline: false,
+      },
+    )
     .setFooter({ text: `Match ID: ${match.id} · Admin: use buttons below` })
     .setTimestamp();
 
@@ -196,34 +198,29 @@ export function buildMatchEmbed(tournament, match, p1Name, p2Name) {
 /**
  * Build the completed match embed (green, with winner).
  */
-export function buildCompletedMatchEmbed(
-  tournament,
-  match,
-  p1Name,
-  p2Name,
-  winnerName,
-) {
+export function buildCompletedMatchEmbed(tournament, match, p1Name, p2Name, winnerName) {
+  const short1 = p1Name.length > 25 ? p1Name.substring(0, 24) + '…' : p1Name;
+  const short2 = p2Name.length > 25 ? p2Name.substring(0, 24) + '…' : p2Name;
+  const shortWinner = winnerName.length > 30 ? winnerName.substring(0, 29) + '…' : winnerName;
+
   const embed = new EmbedBuilder()
-    .setTitle(`✅ ${p1Name}  vs  ${p2Name}`)
+    .setTitle(`✅ ${short1}  vs  ${short2}`)
     .setColor(COLORS.SUCCESS)
     .addFields(
-      { name: "Tournament", value: tournament.name, inline: true },
-      { name: "Round", value: `${match.round}`, inline: true },
-      { name: "Match #", value: `${match.match_number}`, inline: true },
-      { name: "Best Of", value: `${tournament.best_of}`, inline: true },
-      { name: "Status", value: "✅ Completed", inline: true },
-      { name: "🏆 Winner", value: winnerName, inline: true },
+      { name: 'Tournament', value: tournament.name,             inline: true },
+      { name: 'Round',      value: `${match.round}`,            inline: true },
+      { name: 'Match #',    value: `${match.match_number}`,     inline: true },
+      { name: 'Best Of',    value: `${tournament.best_of}`,     inline: true },
+      { name: 'Status',     value: '✅ Completed',               inline: true },
+      { name: '🏆 Winner',  value: shortWinner,                   inline: true },
     )
-    .addFields({
-      name: "📊 Final Score",
-      value: formatScore(
-        p1Name,
-        match.player1_score,
-        p2Name,
-        match.player2_score,
-      ),
-      inline: false,
-    })
+    .addFields(
+      {
+        name: '📊 Final Score',
+        value: formatScore(p1Name, match.player1_score, p2Name, match.player2_score),
+        inline: false,
+      },
+    )
     .setFooter({ text: `Match ID: ${match.id}` })
     .setTimestamp();
 
@@ -397,13 +394,15 @@ export async function updateMatchThreadEmbed(guild, tournament, match, isComplet
       });
 
       // ── Rename thread with status prefix ────────────────────
-      const isDq = winnerName?.includes('DQ') || winnerName?.includes('dq');
-      const prefix = isDq ? '⛔' : '✅ [FINISHED]';
-      const shortWinner = (winnerName || 'Unknown').substring(0, 20);
-      const newName = `${prefix} R${match.round}·M${match.match_number} — ${shortWinner} wins`;
+      const isDq = winnerName?.includes('DQ') || winnerName?.includes('dq') || winnerName?.includes("DQ'd");
+      const prefix = isDq ? '⛔' : '✅';
+      const shortWin = (winnerName || 'Unknown').length > 20 
+        ? (winnerName || 'Unknown').substring(0, 19) + '…' 
+        : (winnerName || 'Unknown');
+      const newName = `${prefix} R${match.round}·M${match.match_number} — ${shortWin} wins`;
 
       try {
-        await thread.setName(newName);
+        await thread.setName(newName.substring(0, 100));
       } catch (err) {
         console.warn(`[THREAD] Could not rename thread:`, err.message);
       }
@@ -443,7 +442,7 @@ export async function markThreadCancelled(guild, match) {
     // Rename
     const newName = `❌ R${match.round}·M${match.match_number} — Cancelled`;
     try {
-      await thread.setName(newName);
+      await thread.setName(newName.substring(0, 100));
     } catch (err) {
       console.warn('[THREAD] Could not rename cancelled thread:', err.message);
     }

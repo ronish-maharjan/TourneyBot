@@ -132,9 +132,10 @@ function buildMatchPerms({ guildId, botId, participantRoleId }) {
 export function buildAdminPanel(tournament) {
   const status = tournament.status;
   const id = tournament.id;
+  const safeName = tournament.name.length > 40 ? tournament.name.substring(0, 39) + '…' : tournament.name;
 
   const embed = new EmbedBuilder()
-    .setTitle(`🛡️ Admin Panel — ${tournament.name}`)
+    .setTitle(`🛡️ Admin Panel — ${safeName}`)
     .setColor(COLORS.PRIMARY)
     .addFields(
       { name: "Status", value: formatStatus(status), inline: true },
@@ -297,8 +298,9 @@ export async function refreshRegistrationMessage(guild, tournament) {
 
     if (isOpen) {
       const count = getParticipantCount(tournament.id);
+      const safeName = tournament.name.length > 30 ? tournament.name.substring(0, 29) + '…' : tournament.name;
       const embed = new EmbedBuilder()
-        .setTitle(`📋 Registration — ${tournament.name}`)
+        .setTitle(`📋 Registration — ${safeName}`)
         .setColor(COLORS.SUCCESS)
         .setDescription(
           "Click a button below to register, unregister, or become a spectator!",
@@ -348,8 +350,9 @@ export async function refreshRegistrationMessage(guild, tournament) {
       await message.edit({ embeds: [embed], components: [row] });
     } else {
       const count = getParticipantCount(tournament.id);
+      const safeName = tournament.name.length > 30 ? tournament.name.substring(0, 29) + '…' : tournament.name;
       const embed = new EmbedBuilder()
-        .setTitle(`📋 Registration — ${tournament.name}`)
+        .setTitle(`📋 Registration — ${safeName}`)
         .setColor(COLORS.DANGER)
         .setDescription("Registration is now **closed**.")
         .addFields({
@@ -391,9 +394,10 @@ export async function refreshParticipationList(guild, tournament) {
 
     const participants = getActiveParticipants(tournament.id);
     const spectators = getSpectators(tournament.id);
+    const safeName = tournament.name.length > 30 ? tournament.name.substring(0, 29) + '…' : tournament.name;
 
     const embed = new EmbedBuilder()
-      .setTitle(`👥 Participants — ${tournament.name}`)
+      .setTitle(`👥 Participants — ${safeName}`)
       .setColor(COLORS.INFO)
       .setTimestamp();
 
