@@ -60,15 +60,16 @@ export const VALID_TEAM_SIZES = [1, 2]; // solo or duo
 
 // ── Channel Names (created under the tournament category) ────────
 export const CHANNEL_NAMES = Object.freeze({
-  LEADERBOARD: "leaderboard",
-  ADMIN: "admin",
-  NOTICE: "notice",
-  REGISTRATION: "registration",
-  PARTICIPATION: "participation",
-  BRACKET: "bracket",
-  RESULT: "result",
-  CHAT: "chat",
-  MATCH: "matches",
+  LEADERBOARD:   'leaderboard',
+  ADMIN:         'admin',
+  NOTICE:        'notice',
+  REGISTRATION:  'registration',
+  PARTICIPATION: 'participation',
+  BRACKET:       'bracket',
+  RESULT:        'result',
+  CHAT:          'chat',
+  MATCH:         'matches',
+  RULES:         'rules',
 });
 
 // ── Role Names ───────────────────────────────────────────────────

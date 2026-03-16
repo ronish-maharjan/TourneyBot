@@ -99,7 +99,7 @@ export async function execute(interaction) {
         },
         {
           name: "📋 Channels",
-          value: "9 channels created",
+          value: "10 channels created",
           inline: true,
         },
         {

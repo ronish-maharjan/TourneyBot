@@ -180,18 +180,30 @@ export async function safeFetchMessage(guild, channelId, messageId) {
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
-//  SAFE PIN
-// ═════════════════════════════════════════════════════════════════
-
 /**
- * Safely pin a message. Silently fails if no permission or already pinned.
+ * Safely pin a message and delete the "pinned a message" system message.
+ * Silently fails if no permission or already pinned.
  * @param {import('discord.js').Message} message
  */
 export async function safePin(message) {
   try {
-    if (!message.pinned) {
-      await message.pin();
+    if (message.pinned) return;
+
+    await message.pin();
+
+    // Wait briefly for Discord to send the system message
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Fetch recent messages and find the pin system message
+    const channel = message.channel;
+    const recent  = await channel.messages.fetch({ limit: 5 });
+
+    for (const [, msg] of recent) {
+      // Type 6 = CHANNEL_PINNED_MESSAGE (system message for pins)
+      if (msg.type === 6 && msg.reference?.messageId === message.id) {
+        await msg.delete().catch(() => {});
+        break;
+      }
     }
   } catch (err) {
     console.warn('[PIN] Could not pin message:', err.message);

@@ -13,7 +13,8 @@ import {
 import {
   refreshAdminPanel,
   refreshRegistrationMessage,
-} from "../services/tournamentService.js";
+  refreshRules,
+} from '../services/tournamentService.js';
 import { updateMatchThreadEmbed } from "../services/threadService.js";
 import { processMatchCompletion } from "../services/matchService.js";
 import {
@@ -143,6 +144,7 @@ async function handleConfigureSubmit(interaction, tournamentId) {
 
     const fresh = getTournamentById(tournament.id);
     await refreshAdminPanel(interaction.guild, fresh);
+    await refreshRules(interaction.guild, fresh);
 
     if (fresh.status === TOURNAMENT_STATUS.REGISTRATION_OPEN) {
       await refreshRegistrationMessage(interaction.guild, fresh);

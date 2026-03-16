@@ -51,6 +51,7 @@ export function initializeDatabase() {
       result_channel_id         TEXT,
       chat_channel_id           TEXT,
       match_channel_id          TEXT,
+      rules_channel_id          TEXT,
 
       organizer_role_id         TEXT,
       participant_role_id       TEXT,
@@ -61,6 +62,7 @@ export function initializeDatabase() {
       participation_message_id  TEXT,
       admin_message_id          TEXT,
       registration_message_id   TEXT,
+      rules_message_id          TEXT,
 
       current_round             INTEGER NOT NULL DEFAULT 0,
       total_rounds              INTEGER NOT NULL DEFAULT 0,
