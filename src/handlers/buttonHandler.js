@@ -1,5 +1,5 @@
 // ─── src/handlers/buttonHandler.js ───────────────────────────────
-
+import { EMBED_BUILDERS, buildHelpButtons } from '../commands/user/help.js';
 import {
     MessageFlags,
     EmbedBuilder,
@@ -42,26 +42,18 @@ import {
  * @param {import('discord.js').ButtonInteraction} interaction
  */
 export async function handleButton(interaction) {
-    const [category, action, ...rest] = interaction.customId.split("_");
-    const targetId = rest.join("_");
+    const [category, action, ...rest] = interaction.customId.split('_');
+    const targetId = rest.join('_');
 
     switch (category) {
-        case "admin":
-            return handleAdminButton(interaction, action, targetId);
-        case "reg":
-            return handleRegButton(interaction, action, targetId);
-        case "match":
-            return handleMatchButton(interaction, action, targetId);
-        case "confirm":
-            return handleConfirmButton(interaction, action, targetId);
+        case 'admin':   return handleAdminButton(interaction, action, targetId);
+        case 'reg':     return handleRegButton(interaction, action, targetId);
+        case 'match':   return handleMatchButton(interaction, action, targetId);
+        case 'confirm': return handleConfirmButton(interaction, action, targetId);
+        case 'help':    return handleHelpButton(interaction, action);           // ← ADD
         default:
-            console.warn(
-                `[BTN] Unknown category: ${category} (${interaction.customId})`,
-            );
-            await interaction.reply({
-                content: "❓ Unknown action.",
-                flags: MessageFlags.Ephemeral,
-            });
+            console.warn(`[BTN] Unknown category: ${category} (${interaction.customId})`);
+            await interaction.reply({ content: '❓ Unknown action.', flags: MessageFlags.Ephemeral });
     }
 }
 
@@ -684,4 +676,23 @@ async function executeDqFromMatch(interaction, encodedId) {
     );
 
     await interaction.showModal(modal);
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  HELP BUTTONS
+// ═════════════════════════════════════════════════════════════════
+
+async function handleHelpButton(interaction, category) {
+  const builder = EMBED_BUILDERS[category];
+  if (!builder) {
+    return interaction.reply({ content: '❓ Unknown help category.', flags: MessageFlags.Ephemeral });
+  }
+
+  const embed   = builder();
+  const buttons = buildHelpButtons(category);
+
+  await interaction.update({
+    embeds: [embed],
+    components: [buttons],
+  });
 }

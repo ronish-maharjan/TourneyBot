@@ -1,6 +1,6 @@
 // ─── src/index.js ────────────────────────────────────────────────
 // Entry point: initialises DB, loads commands, wires events, logs in.
-
+import { handleMemberJoin } from './events/guildMemberAdd.js';
 import "dotenv/config";
 import { Client, Collection, GatewayIntentBits, Events } from "discord.js";
 import { initializeDatabase, closeDatabase } from "./database/init.js";
@@ -37,9 +37,8 @@ await loadCommands(client);
 // ── Events ──────────────────────────────────────────────────────
 // Use Events.ClientReady instead of 'ready' (deprecated in v15)
 client.once(Events.ClientReady, () => handleReady(client));
-client.on(Events.InteractionCreate, (interaction) =>
-  handleInteraction(interaction, client),
-);
+client.on(Events.InteractionCreate, interaction => handleInteraction(interaction, client));
+client.on(Events.GuildMemberAdd, member => handleMemberJoin(member));
 
 // ── Login ───────────────────────────────────────────────────────
 client.login(DISCORD_TOKEN);

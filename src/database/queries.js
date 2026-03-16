@@ -900,3 +900,47 @@ export function getRemainingMatchCountForRound(tournamentId, round) {
   `).get(tournamentId, round);
     return row?.count ?? 0;
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  AUTOROLE QUERIES
+// ═════════════════════════════════════════════════════════════════
+
+/**
+ * Add a role to the autorole list for a guild.
+ */
+export function addAutorole(guildId, roleId) {
+  const db = getDatabase();
+  return db.prepare(
+    'INSERT OR IGNORE INTO autoroles (guild_id, role_id) VALUES (?, ?)'
+  ).run(guildId, roleId);
+}
+
+/**
+ * Remove a role from the autorole list.
+ */
+export function removeAutorole(guildId, roleId) {
+  const db = getDatabase();
+  return db.prepare(
+    'DELETE FROM autoroles WHERE guild_id = ? AND role_id = ?'
+  ).run(guildId, roleId);
+}
+
+/**
+ * Get all autoroles for a guild.
+ */
+export function getAutoroles(guildId) {
+  const db = getDatabase();
+  return db.prepare(
+    'SELECT * FROM autoroles WHERE guild_id = ?'
+  ).all(guildId);
+}
+
+/**
+ * Clear all autoroles for a guild.
+ */
+export function clearAutoroles(guildId) {
+  const db = getDatabase();
+  return db.prepare(
+    'DELETE FROM autoroles WHERE guild_id = ?'
+  ).run(guildId);
+}

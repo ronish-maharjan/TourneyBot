@@ -139,6 +139,19 @@ export function initializeDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_matches_status
       ON matches(tournament_id, status);
+
+    -----------------------------------------------------------------
+    -- AUTOROLES
+    -----------------------------------------------------------------
+    CREATE TABLE IF NOT EXISTS autoroles (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id  TEXT NOT NULL,
+      role_id   TEXT NOT NULL,
+      UNIQUE(guild_id, role_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_autoroles_guild
+      ON autoroles(guild_id);
   `);
 
   console.log('[DB] Database initialised successfully.');
@@ -166,3 +179,4 @@ export function closeDatabase() {
     console.log('[DB] Database closed.');
   }
 }
+
