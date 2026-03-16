@@ -1,5 +1,6 @@
 // ─── src/index.js ────────────────────────────────────────────────
 // Entry point: initialises DB, loads commands, wires events, logs in.
+import { cleanStaleLocks } from './services/lockService.js';
 import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
 import { handleMemberJoin } from './events/guildMemberAdd.js';
 import "dotenv/config";
@@ -40,6 +41,8 @@ await loadCommands(client);
 client.once(Events.ClientReady, () => {
   handleReady(client);
   startGiveawayTimer(client);
+  // Clean stale locks every 2 minutes
+  setInterval(() => cleanStaleLocks(), 120_000);
 });
 client.on(Events.InteractionCreate, interaction => handleInteraction(interaction, client));
 client.on(Events.GuildMemberAdd, member => handleMemberJoin(member));

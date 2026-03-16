@@ -1,7 +1,7 @@
 // ─── src/services/disqualifyService.js ───────────────────────────
 // Handles full disqualification logic: mark DQ, resolve matches,
 // award opponents, update embeds, notify players.
-
+import { acquireLock, releaseLock } from './lockService.js';
 import { EmbedBuilder } from "discord.js";
 import {
     getTournamentById,
@@ -58,114 +58,89 @@ import { updateMatchThreadEmbed ,markThreadCancelled} from "./threadService.js";
  * @param {string} reason      Reason for disqualification
  * @returns {Promise<{ success: boolean, message: string }>}
  */
-export async function disqualifyPlayer(
-    guild,
-    tournament,
-    userId,
-    reason = "Disqualified by admin",
-) {
-    // ── Validate participant ───────────────────────────────────
+export async function disqualifyPlayer(guild, tournament, userId, reason = 'Disqualified by admin') {
+  // ── Acquire lock ───────────────────────────────────────────
+  if (!acquireLock(`dq_${userId}`)) {
+    return {
+      success: false,
+      message: '⏳ This player is already being processed for disqualification.',
+    };
+  }
+
+  try {
+    // ── Validate participant (fresh from DB) ─────────────────
     const participant = getParticipant(tournament.id, userId);
     if (!participant) {
-        return {
-            success: false,
-            message: "❌ This user is not a participant in the tournament.",
-        };
+      return { success: false, message: '❌ This user is not a participant in the tournament.' };
     }
 
     if (participant.status === PARTICIPANT_STATUS.DISQUALIFIED) {
-        return { success: false, message: "❌ This user is already disqualified." };
+      return { success: false, message: '❌ This user is already disqualified.' };
     }
 
-    if (participant.role !== "participant") {
-        return {
-            success: false,
-            message: "❌ This user is a spectator, not a participant.",
-        };
+    if (participant.role !== 'participant') {
+      return { success: false, message: '❌ This user is a spectator, not a participant.' };
     }
 
-    // ── Validate tournament status ─────────────────────────────
     if (tournament.status !== TOURNAMENT_STATUS.IN_PROGRESS) {
-        return {
-            success: false,
-            message:
-            "❌ Disqualification is only available during an active tournament.",
-        };
+      return { success: false, message: '❌ Disqualification is only available during an active tournament.' };
     }
 
-    try {
-        // ── 1. Mark as disqualified ──────────────────────────────
-        updateParticipantStatus(
-            tournament.id,
-            userId,
-            PARTICIPANT_STATUS.DISQUALIFIED,
-        );
+    // ... rest of the function stays exactly the same ...
+    // (all the existing logic for marking DQ, resolving matches, etc.)
 
-        // ── 2. Resolve all their unfinished matches ──────────────
-        const resolvedMatches = await resolvePlayerMatches(
-            guild,
-            tournament,
-            userId,
-        );
+    // ── 1. Mark as disqualified ──────────────────────────────
+    updateParticipantStatus(tournament.id, userId, PARTICIPANT_STATUS.DISQUALIFIED);
 
-        // ── 3. Remove participant role ───────────────────────────
-        await removeParticipantRole(guild, tournament, userId);
+    const resolvedMatches = await resolvePlayerMatches(guild, tournament, userId);
 
-        // ── 4. Post notice ───────────────────────────────────────
-        const playerName = participant.display_name || participant.username;
-        await sendTournamentNotice(
-            guild,
-            tournament,
-            new EmbedBuilder()
-            .setTitle("⛔ Player Disqualified")
-            .setColor(COLORS.DANGER)
-            .setDescription(
-                `**${playerName}** (<@${userId}>) has been disqualified from **${tournament.name}**.\n\n` +
-                `📝 **Reason:** ${reason}\n` +
-                `⚔️ **Matches affected:** ${resolvedMatches.length}\n\n` +
-                `All their remaining matches have been awarded to opponents.`,
-            )
-            .setTimestamp(),
-        );
+    await removeParticipantRole(guild, tournament, userId);
 
-        // ── 5. DM the disqualified player ────────────────────────
-        await dmDisqualifiedPlayer(guild, tournament, userId, reason);
+    const playerName = participant.display_name || participant.username;
+    await sendTournamentNotice(guild, tournament, new EmbedBuilder()
+      .setTitle('⛔ Player Disqualified')
+      .setColor(COLORS.DANGER)
+      .setDescription(
+        `**${playerName}** (<@${userId}>) has been disqualified from **${tournament.name}**.\n\n` +
+        `📝 **Reason:** ${reason}\n` +
+        `⚔️ **Matches affected:** ${resolvedMatches.length}\n\n` +
+        `All their remaining matches have been awarded to opponents.`,
+      )
+      .setTimestamp(),
+    );
 
-        // ── 6. Refresh embeds ────────────────────────────────────
-        const fresh = getTournamentById(tournament.id);
-        await refreshLeaderboard(guild, fresh);
-        await refreshBracket(guild, fresh);
-        await refreshParticipationList(guild, fresh);
-        await refreshAdminPanel(guild, fresh);
+    await dmDisqualifiedPlayer(guild, tournament, userId, reason);
 
-        // ── 7. Check if tournament is now complete ───────────────
-        const tournamentDone = isTournamentComplete(tournament.id);
+    const fresh = getTournamentById(tournament.id);
+    await refreshLeaderboard(guild, fresh);
+    await refreshBracket(guild, fresh);
+    await refreshParticipationList(guild, fresh);
+    await refreshAdminPanel(guild, fresh);
 
-        if (tournamentDone) {
-            await autoCompleteTournament(guild, fresh);
-        } else {
-            // ── 8. Launch newly available matches ──────────────────
-            await launchAvailableMatches(guild, fresh);
-        }
+    const tournamentDone = isTournamentComplete(tournament.id);
 
-        console.log(
-            `[DQ] Disqualified "${playerName}" from "${tournament.name}" — ${resolvedMatches.length} matches resolved`,
-        );
-
-        return {
-            success: true,
-            message:
-            `✅ **${playerName}** has been disqualified.\n\n` +
-            `⚔️ **${resolvedMatches.length}** match(es) resolved.\n` +
-            `All opponents awarded wins automatically.`,
-        };
-    } catch (err) {
-        console.error("[DQ] Disqualification failed:", err);
-        return {
-            success: false,
-            message: `❌ Disqualification failed: ${err.message}`,
-        };
+    if (tournamentDone) {
+      await autoCompleteTournament(guild, fresh);
+    } else {
+      await launchAvailableMatches(guild, fresh);
     }
+
+    console.log(`[DQ] Disqualified "${playerName}" from "${tournament.name}" — ${resolvedMatches.length} matches resolved`);
+
+    return {
+      success: true,
+      message:
+        `✅ **${playerName}** has been disqualified.\n\n` +
+        `⚔️ **${resolvedMatches.length}** match(es) resolved.\n` +
+        `All opponents awarded wins automatically.`,
+    };
+
+  } catch (err) {
+    console.error('[DQ] Disqualification failed:', err);
+    return { success: false, message: `❌ Disqualification failed: ${err.message}` };
+  } finally {
+    releaseLock(`dq_${userId}`);
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════

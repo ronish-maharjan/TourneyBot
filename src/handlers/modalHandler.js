@@ -1,5 +1,6 @@
 // ─── src/handlers/modalHandler.js ────────────────────────────────
 // Routes modal-submit interactions by custom-ID prefix.
+import { acquireLock, releaseLock } from '../services/lockService.js';
 import {
     getGiveawayConfig,
     getGiveawayChannels,
@@ -174,195 +175,208 @@ async function handleConfigureSubmit(interaction, tournamentId) {
 // ═════════════════════════════════════════════════════════════════
 
 async function handleScoreSubmit(interaction, matchIdStr) {
-    const matchId = parseInt(matchIdStr, 10);
+  const matchId = parseInt(matchIdStr, 10);
 
+  // ── Acquire lock ───────────────────────────────────────────
+  if (!acquireLock(`match_${matchId}`)) {
+    return interaction.reply({
+      content: '⏳ Another staff member is already recording a score for this match. Please wait.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  try {
+    // ── Fetch match (fresh from DB) ──────────────────────────
     const match = getMatchById(matchId);
     if (!match) {
-        return interaction.reply({
-            content: "❌ Match not found.",
-            flags: MessageFlags.Ephemeral,
-        });
+      return interaction.reply({
+        content: '❌ Match not found.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
-    if (match.status === "completed") {
-        return interaction.reply({
-            content: "❌ This match is already completed.",
-            flags: MessageFlags.Ephemeral,
-        });
+    if (match.status === 'completed') {
+      return interaction.reply({
+        content: '❌ This match is already completed.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
-    if (match.status === "cancelled") {
-        return interaction.reply({
-            content: "❌ This match has been cancelled.",
-            flags: MessageFlags.Ephemeral,
-        });
+    if (match.status === 'cancelled') {
+      return interaction.reply({
+        content: '❌ This match has been cancelled.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     const tournament = getTournamentById(match.tournament_id);
     if (!tournament) {
-        return interaction.reply({
-            content: "❌ Tournament not found.",
-            flags: MessageFlags.Ephemeral,
-        });
+      return interaction.reply({
+        content: '❌ Tournament not found.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
-    const winnerInput = interaction.fields.getTextInputValue("winner").trim();
+    const winnerInput = interaction.fields.getTextInputValue('winner').trim();
 
-    if (winnerInput !== "1" && winnerInput !== "2") {
-        return interaction.reply({
-            content:
-            "❌ Invalid input. Enter **1** or **2** to select the game winner.",
-            flags: MessageFlags.Ephemeral,
-        });
+    if (winnerInput !== '1' && winnerInput !== '2') {
+      return interaction.reply({
+        content: '❌ Invalid input. Enter **1** or **2** to select the game winner.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
-    const gameWinnerId =
-        winnerInput === "1" ? match.player1_id : match.player2_id;
+    const gameWinnerId = winnerInput === '1' ? match.player1_id : match.player2_id;
 
     let newP1Score = match.player1_score;
     let newP2Score = match.player2_score;
 
     if (gameWinnerId === match.player1_id) {
-        newP1Score += 1;
+      newP1Score += 1;
     } else {
-        newP2Score += 1;
+      newP2Score += 1;
     }
 
     const p1Data = getParticipant(tournament.id, match.player1_id);
     const p2Data = getParticipant(tournament.id, match.player2_id);
-    const p1Name = p1Data?.display_name || p1Data?.username || "Player 1";
-    const p2Name = p2Data?.display_name || p2Data?.username || "Player 2";
+    const p1Name = p1Data?.display_name || p1Data?.username || 'Player 1';
+    const p2Name = p2Data?.display_name || p2Data?.username || 'Player 2';
     const gameWinnerName = gameWinnerId === match.player1_id ? p1Name : p2Name;
 
-    const winsNeeded = Math.ceil(tournament.best_of / 2);
+    const winsNeeded  = Math.ceil(tournament.best_of / 2);
     const isCompleted = newP1Score >= winsNeeded || newP2Score >= winsNeeded;
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    try {
-        if (isCompleted) {
-            const matchWinnerId =
-                newP1Score >= winsNeeded ? match.player1_id : match.player2_id;
-            const matchLoserId =
-                matchWinnerId === match.player1_id
-                ? match.player2_id
-                : match.player1_id;
-            const matchWinnerName =
-                matchWinnerId === match.player1_id ? p1Name : p2Name;
+    if (isCompleted) {
+      const matchWinnerId   = newP1Score >= winsNeeded ? match.player1_id : match.player2_id;
+      const matchLoserId    = matchWinnerId === match.player1_id ? match.player2_id : match.player1_id;
+      const matchWinnerName = matchWinnerId === match.player1_id ? p1Name : p2Name;
 
-            updateMatchResult(match.id, {
-                winnerId: matchWinnerId,
-                loserId: matchLoserId,
-                player1Score: newP1Score,
-                player2Score: newP2Score,
-            });
+      updateMatchResult(match.id, {
+        winnerId:     matchWinnerId,
+        loserId:      matchLoserId,
+        player1Score: newP1Score,
+        player2Score: newP2Score,
+      });
 
-            const updatedMatch = getMatchById(match.id);
+      const updatedMatch = getMatchById(match.id);
 
-            await updateMatchThreadEmbed(
-                interaction.guild,
-                tournament,
-                updatedMatch,
-                true,
-                matchWinnerName,
-            );
+      await updateMatchThreadEmbed(interaction.guild, tournament, updatedMatch, true, matchWinnerName);
 
-            await interaction.editReply({
-                content:
-                `✅ **Match Complete!**\n\n` +
-                `🏆 **Winner:** ${matchWinnerName}\n` +
-                `📊 **Final Score:** ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}\n\n` +
-                `_Updating stats, posting results, and scheduling next matches…_`,
-            });
+      await interaction.editReply({
+        content:
+          `✅ **Match Complete!**\n\n` +
+          `🏆 **Winner:** ${matchWinnerName}\n` +
+          `📊 **Final Score:** ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}\n\n` +
+          `_Updating stats, posting results, and scheduling next matches…_`,
+      });
 
-            // ── Post-match processing ────────────────────────────────
-            processMatchCompletion(interaction.guild, tournament, updatedMatch).catch(
-                (err) => console.error("[SCORE] Post-match processing error:", err),
-            );
+      processMatchCompletion(interaction.guild, tournament, updatedMatch)
+        .catch(err => console.error('[SCORE] Post-match processing error:', err));
 
-            console.log(
-                `[SCORE] Match #${match.match_number} (R${match.round}) completed: ${matchWinnerName} wins ${newP1Score}-${newP2Score}`,
-            );
-        } else {
-            updateMatchScore(match.id, newP1Score, newP2Score);
+      console.log(`[SCORE] Match #${match.match_number} (R${match.round}) completed: ${matchWinnerName} wins ${newP1Score}-${newP2Score}`);
 
-            const updatedMatch = getMatchById(match.id);
+    } else {
+      updateMatchScore(match.id, newP1Score, newP2Score);
 
-            await updateMatchThreadEmbed(
-                interaction.guild,
-                tournament,
-                updatedMatch,
-                false,
-            );
+      const updatedMatch = getMatchById(match.id);
 
-            const maxScore = Math.max(newP1Score, newP2Score);
-            const gamesLeft = winsNeeded - maxScore;
+      await updateMatchThreadEmbed(interaction.guild, tournament, updatedMatch, false);
 
-            await interaction.editReply({
-                content:
-                `✅ **Game recorded!**\n\n` +
-                `🎮 **Game winner:** ${gameWinnerName}\n` +
-                `📊 **Current Score:** ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}\n` +
-                `⏳ **${gamesLeft}** more win(s) needed to complete the match.`,
-            });
+      const maxScore  = Math.max(newP1Score, newP2Score);
+      const gamesLeft = winsNeeded - maxScore;
 
-            console.log(
-                `[SCORE] Match #${match.match_number} (R${match.round}) score updated: ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}`,
-            );
-        }
-    } catch (err) {
-        console.error("[SCORE] Failed to record score:", err);
-        await interaction.editReply({
-            content: `❌ Failed to record score: ${err.message}`,
-        });
+      await interaction.editReply({
+        content:
+          `✅ **Game recorded!**\n\n` +
+          `🎮 **Game winner:** ${gameWinnerName}\n` +
+          `📊 **Current Score:** ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}\n` +
+          `⏳ **${gamesLeft}** more win(s) needed to complete the match.`,
+      });
+
+      console.log(`[SCORE] Match #${match.match_number} (R${match.round}) score updated: ${p1Name} ${newP1Score} — ${newP2Score} ${p2Name}`);
     }
+
+  } catch (err) {
+    console.error('[SCORE] Failed to record score:', err);
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply({ content: `❌ Failed to record score: ${err.message}` });
+      } else {
+        await interaction.reply({ content: `❌ Failed to record score: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    } catch {
+      // Interaction expired
+    }
+  } finally {
+    releaseLock(`match_${matchId}`);
+  }
 }
+
 // ═════════════════════════════════════════════════════════════════
 //  DISQUALIFY MODAL SUBMIT
 // ═════════════════════════════════════════════════════════════════
 
 async function handleDqSubmit(interaction, encodedId) {
-    // encodedId format: "matchId:userId"
-    const [matchIdStr, targetUserId] = encodedId.split(":");
+  const [matchIdStr, targetUserId] = encodedId.split(':');
+  const matchId = parseInt(matchIdStr, 10);
 
-    if (!targetUserId) {
-        return interaction.reply({
-            content: "❌ Invalid disqualification target.",
-            flags: MessageFlags.Ephemeral,
-        });
-    }
+  if (!targetUserId) {
+    return interaction.reply({
+      content: '❌ Invalid disqualification target.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
 
-    const match = getMatchById(parseInt(matchIdStr, 10));
+  // ── Acquire lock on the PLAYER (prevents double DQ) ────────
+  if (!acquireLock(`dq_${targetUserId}`)) {
+    return interaction.reply({
+      content: '⏳ Another staff member is already processing a disqualification for this player.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  try {
+    const match = getMatchById(matchId);
     if (!match) {
-        return interaction.reply({
-            content: "❌ Match not found.",
-            flags: MessageFlags.Ephemeral,
-        });
+      return interaction.reply({
+        content: '❌ Match not found.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     const tournament = getTournamentById(match.tournament_id);
     if (!tournament) {
-        return interaction.reply({
-            content: "❌ Tournament not found.",
-            flags: MessageFlags.Ephemeral,
-        });
+      return interaction.reply({
+        content: '❌ Tournament not found.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
-    const reason =
-        interaction.fields.getTextInputValue("reason").trim() ||
-        "No reason provided";
+    const reason = interaction.fields.getTextInputValue('reason').trim() || 'No reason provided';
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    const { disqualifyPlayer } = await import("../services/disqualifyService.js");
-    const result = await disqualifyPlayer(
-        interaction.guild,
-        tournament,
-        targetUserId,
-        reason,
-    );
+    const { disqualifyPlayer } = await import('../services/disqualifyService.js');
+    const result = await disqualifyPlayer(interaction.guild, tournament, targetUserId, reason);
 
     await interaction.editReply({ content: result.message });
+
+  } catch (err) {
+    console.error('[DQ] Failed:', err);
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply({ content: `❌ Failed: ${err.message}` });
+      } else {
+        await interaction.reply({ content: `❌ Failed: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    } catch {
+      // Interaction expired
+    }
+  } finally {
+    releaseLock(`dq_${targetUserId}`);
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════
