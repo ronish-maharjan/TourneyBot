@@ -1,6 +1,7 @@
 // ─── src/handlers/buttonHandler.js ───────────────────────────────
 import { EMBED_BUILDERS, buildHelpButtons } from '../commands/user/help.js';
 import {
+    PermissionFlagsBits,
     MessageFlags,
     EmbedBuilder,
     ActionRowBuilder,
@@ -16,6 +17,14 @@ import {
     getActiveParticipantCount,
     getMatchById,
     getParticipant,
+    getGiveawayById,
+    getGiveawayConfig,
+    getGiveawayChannels,
+    updateGiveawayApproval,
+    hasEnteredGiveaway,
+    addGiveawayEntry,
+    removeGiveawayEntry,
+    getGiveawayEntryCount,
 } from "../database/queries.js";
 import {
     COLORS,
@@ -38,23 +47,29 @@ import {
     registerSpectator,
 } from "../services/registrationService.js";
 
+import {
+  acquireGiveawayLock,
+  releaseGiveawayLock,
+  buildDisabledReviewButtons,
+} from '../services/giveawayService.js';
 /**
  * @param {import('discord.js').ButtonInteraction} interaction
  */
 export async function handleButton(interaction) {
-    const [category, action, ...rest] = interaction.customId.split('_');
-    const targetId = rest.join('_');
+  const [category, action, ...rest] = interaction.customId.split('_');
+  const targetId = rest.join('_');
 
-    switch (category) {
-        case 'admin':   return handleAdminButton(interaction, action, targetId);
-        case 'reg':     return handleRegButton(interaction, action, targetId);
-        case 'match':   return handleMatchButton(interaction, action, targetId);
-        case 'confirm': return handleConfirmButton(interaction, action, targetId);
-        case 'help':    return handleHelpButton(interaction, action);           // ← ADD
-        default:
-            console.warn(`[BTN] Unknown category: ${category} (${interaction.customId})`);
-            await interaction.reply({ content: '❓ Unknown action.', flags: MessageFlags.Ephemeral });
-    }
+  switch (category) {
+    case 'admin':   return handleAdminButton(interaction, action, targetId);
+    case 'reg':     return handleRegButton(interaction, action, targetId);
+    case 'match':   return handleMatchButton(interaction, action, targetId);
+    case 'confirm': return handleConfirmButton(interaction, action, targetId);
+    case 'help':    return handleHelpButton(interaction, action);
+    case 'ga':      return handleGiveawayButton(interaction, action, targetId);  // ← ADD
+    default:
+      console.warn(`[BTN] Unknown category: ${category} (${interaction.customId})`);
+      await interaction.reply({ content: '❓ Unknown action.', flags: MessageFlags.Ephemeral });
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -695,4 +710,424 @@ async function handleHelpButton(interaction, category) {
     embeds: [embed],
     components: [buttons],
   });
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  GIVEAWAY BUTTONS
+// ═════════════════════════════════════════════════════════════════
+
+async function handleGiveawayButton(interaction, action, targetId) {
+  switch (action) {
+    case 'approve': return handleGiveawayApprove(interaction, targetId);
+    case 'reject':  return handleGiveawayReject(interaction, targetId);
+    case 'enter':   return handleGiveawayEnter(interaction, targetId);
+    case 'channel': return handleGiveawayChannelSelect(interaction, targetId);
+    default:
+      await interaction.reply({ content: '❓ Unknown giveaway action.', flags: MessageFlags.Ephemeral });
+  }
+}
+
+// ── Approve: Show channel selection ──────────────────────────────
+
+async function handleGiveawayApprove(interaction, giveawayId) {
+  const id       = parseInt(giveawayId, 10);
+  const giveaway = getGiveawayById(id);
+
+  if (!giveaway) {
+    return interaction.update({
+      content: '❌ Giveaway not found.',
+      embeds: [],
+      components: [],
+    });
+  }
+
+  // ── Race condition check ───────────────────────────────────
+  if (giveaway.status !== 'pending') {
+    const statusMsg = giveaway.status === 'approved'
+      ? '✅ This giveaway has already been **approved** by another staff member.'
+      : '❌ This giveaway has already been **rejected** by another staff member.';
+
+    return interaction.update({
+      content: statusMsg,
+      embeds: [],
+      components: [buildDisabledReviewButtons(id, giveaway.status === 'approved' ? 'approved' : 'rejected')],
+    });
+  }
+
+  // Fetch guild from giveaway data
+  const guild = interaction.client.guilds.cache.get(giveaway.guild_id);
+  if (!guild) {
+    return interaction.reply({ content: '❌ Could not find the server.', flags: MessageFlags.Ephemeral });
+  }
+
+  const config = getGiveawayConfig(giveaway.guild_id);
+  if (!config) {
+    return interaction.reply({ content: '❌ Giveaway system not configured.', flags: MessageFlags.Ephemeral });
+  }
+
+  // Verify staff role
+  try {
+    const member = await guild.members.fetch(interaction.user.id);
+    if (!member.roles.cache.has(config.staff_role_id) &&
+        !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+      return interaction.reply({ content: '❌ Only giveaway staff can approve.', flags: MessageFlags.Ephemeral });
+    }
+  } catch {
+    return interaction.reply({ content: '❌ Could not verify your permissions.', flags: MessageFlags.Ephemeral });
+  }
+
+  // Show channel selection buttons
+  const channels = getGiveawayChannels(giveaway.guild_id);
+  if (channels.length === 0) {
+    return interaction.reply({ content: '❌ No giveaway channels configured.', flags: MessageFlags.Ephemeral });
+  }
+
+  const rows = [];
+  const row  = new ActionRowBuilder();
+
+  for (let i = 0; i < channels.length && i < 5; i++) {
+    const ch = guild.channels.cache.get(channels[i].channel_id);
+    const label = ch ? `#${ch.name}` : 'Unknown';
+    const safeLbl = label.length > 40 ? label.substring(0, 39) + '…' : label;
+
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`ga_channel_${giveawayId}:${channels[i].channel_id}`)
+        .setLabel(safeLbl)
+        .setEmoji('📢')
+        .setStyle(ButtonStyle.Primary),
+    );
+  }
+  rows.push(row);
+
+  if (channels.length > 5) {
+    const row2 = new ActionRowBuilder();
+    for (let i = 5; i < channels.length && i < 10; i++) {
+      const ch = guild.channels.cache.get(channels[i].channel_id);
+      const label = ch ? `#${ch.name}` : 'Unknown';
+      const safeLbl = label.length > 40 ? label.substring(0, 39) + '…' : label;
+
+      row2.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`ga_channel_${giveawayId}:${channels[i].channel_id}`)
+          .setLabel(safeLbl)
+          .setEmoji('📢')
+          .setStyle(ButtonStyle.Primary),
+      );
+    }
+    rows.push(row2);
+  }
+
+  await interaction.update({
+    content: `📢 **Select which channel** to publish giveaway **#${giveawayId}** in:`,
+    embeds: [],
+    components: rows,
+  });
+}
+
+// ── Channel Selected: Publish giveaway ───────────────────────────
+
+async function handleGiveawayChannelSelect(interaction, encodedId) {
+  const [giveawayIdStr, channelId] = encodedId.split(':');
+  const giveawayId = parseInt(giveawayIdStr, 10);
+
+  const giveaway = getGiveawayById(giveawayId);
+
+  if (!giveaway) {
+    return interaction.update({
+      content: '❌ Giveaway not found.',
+      components: [],
+    });
+  }
+
+  // ── Race condition check ───────────────────────────────────
+  if (giveaway.status !== 'pending') {
+    return interaction.update({
+      content: '⚠️ This giveaway has already been processed by another staff member.',
+      components: [],
+    });
+  }
+
+  // ── Acquire lock ───────────────────────────────────────────
+  if (!acquireGiveawayLock(giveawayId)) {
+    return interaction.update({
+      content: '⏳ Another staff member is already processing this giveaway. Please wait.',
+      components: [],
+    });
+  }
+
+  await interaction.update({
+    content: '⏳ Publishing giveaway…',
+    components: [],
+  });
+
+  const guild = interaction.client.guilds.cache.get(giveaway.guild_id);
+  if (!guild) {
+    releaseGiveawayLock(giveawayId);
+    return interaction.editReply({ content: '❌ Could not find the server.' });
+  }
+
+  try {
+    // Double-check status (in case it changed between lock and here)
+    const freshGiveaway = getGiveawayById(giveawayId);
+    if (freshGiveaway.status !== 'pending') {
+      releaseGiveawayLock(giveawayId);
+      return interaction.editReply({ content: '⚠️ This giveaway was already processed.' });
+    }
+
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel) {
+      releaseGiveawayLock(giveawayId);
+      return interaction.editReply({ content: '❌ Channel not found.' });
+    }
+
+    // Calculate end time
+    const endsAt = new Date(Date.now() + giveaway.duration_minutes * 60 * 1000).toISOString();
+
+    // Determine ping content
+    const config = getGiveawayConfig(giveaway.guild_id);
+    let pingContent;
+    if (config?.ping_role_id) {
+      pingContent = `<@&${config.ping_role_id}>`;
+    } else {
+      pingContent = '@everyone';
+    }
+
+    // Build and send giveaway embed
+    const { buildGiveawayEmbed, buildGiveawayButtons } = await import('../services/giveawayService.js');
+    const embed   = buildGiveawayEmbed({ ...giveaway, ends_at: endsAt }, 0, false);
+    const buttons = buildGiveawayButtons(giveaway.id, false);
+
+    const giveawayMsg = await channel.send({
+      content: pingContent,
+      embeds: [embed],
+      components: [buttons],
+      allowedMentions: {
+        parse: ['everyone'],
+        roles: config?.ping_role_id ? [config.ping_role_id] : [],
+      },
+    });
+
+    // Update DB
+    const { updateGiveawayApproval: updateApproval } = await import('../database/queries.js');
+    updateApproval(giveaway.id, {
+      channelId: channel.id,
+      messageId: giveawayMsg.id,
+      endsAt,
+    });
+
+    // DM creator
+    try {
+      const creator = await guild.members.fetch(giveaway.creator_id).catch(() => null);
+      if (creator) {
+        const epoch = Math.floor(new Date(endsAt).getTime() / 1000);
+        await creator.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('✅ Your Giveaway Was Approved!')
+              .setColor(COLORS.SUCCESS)
+              .setDescription(
+                `Your giveaway for **${giveaway.prize}** has been approved and published!\n\n` +
+                `📢 **Channel:** <#${channel.id}>\n` +
+                `⏰ **Ends:** <t:${epoch}:R>\n` +
+                `✅ **Approved by:** ${interaction.user.displayName}`,
+              )
+              .setFooter({ text: guild.name })
+              .setTimestamp(),
+          ],
+        });
+      }
+    } catch {
+      // DMs disabled
+    }
+
+    const pingLabel = config?.ping_role_id ? `<@&${config.ping_role_id}>` : '@everyone';
+    await interaction.editReply({
+      content: `✅ Giveaway **#${giveaway.id}** published in <#${channel.id}> with ${pingLabel} ping!`,
+    });
+
+    console.log(`[GIVEAWAY] #${giveaway.id} approved by ${interaction.user.username} → #${channel.name}`);
+
+  } catch (err) {
+    console.error('[GIVEAWAY] Publish failed:', err);
+    await interaction.editReply({ content: `❌ Failed to publish: ${err.message}` });
+  } finally {
+    releaseGiveawayLock(giveawayId);
+  }
+}
+
+// ── Reject: Show reason modal ────────────────────────────────────
+
+async function handleGiveawayReject(interaction, giveawayId) {
+  const id       = parseInt(giveawayId, 10);
+  const giveaway = getGiveawayById(id);
+
+  if (!giveaway) {
+    return interaction.update({
+      content: '❌ Giveaway not found.',
+      embeds: [],
+      components: [],
+    });
+  }
+
+  // ── Race condition check ───────────────────────────────────
+  if (giveaway.status !== 'pending') {
+    const statusMsg = giveaway.status === 'approved'
+      ? '✅ This giveaway has already been **approved** by another staff member.'
+      : '❌ This giveaway has already been **rejected** by another staff member.';
+
+    return interaction.update({
+      content: statusMsg,
+      embeds: [],
+      components: [buildDisabledReviewButtons(id, giveaway.status === 'approved' ? 'approved' : 'rejected')],
+    });
+  }
+
+  // Fetch guild and verify staff
+  const guild = interaction.client.guilds.cache.get(giveaway.guild_id);
+  if (!guild) {
+    return interaction.reply({ content: '❌ Could not find the server.', flags: MessageFlags.Ephemeral });
+  }
+
+  const config = getGiveawayConfig(giveaway.guild_id);
+  if (!config) {
+    return interaction.reply({ content: '❌ Giveaway system not configured.', flags: MessageFlags.Ephemeral });
+  }
+
+  try {
+    const member = await guild.members.fetch(interaction.user.id);
+    if (!member.roles.cache.has(config.staff_role_id) &&
+        !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+      return interaction.reply({ content: '❌ Only giveaway staff can reject.', flags: MessageFlags.Ephemeral });
+    }
+  } catch {
+    return interaction.reply({ content: '❌ Could not verify your permissions.', flags: MessageFlags.Ephemeral });
+  }
+
+  // Show reason modal
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_gareject_${giveawayId}`)
+    .setTitle('Reject Giveaway');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('reason')
+        .setLabel('Reason for rejection')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Explain why this giveaway is being rejected...')
+        .setMaxLength(300)
+        .setRequired(true),
+    ),
+  );
+
+  await interaction.showModal(modal);
+}
+
+// ── Enter giveaway — stub for G4 ────────────────────────────────
+
+async function handleGiveawayEnter(interaction, giveawayId) {
+  const id       = parseInt(giveawayId, 10);
+  const giveaway = getGiveawayById(id);
+
+  if (!giveaway) {
+    return interaction.reply({
+      content: '❌ This giveaway no longer exists.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (giveaway.status !== 'approved') {
+    return interaction.reply({
+      content: '❌ This giveaway has ended.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // Check if ended by time
+  if (giveaway.ends_at && new Date(giveaway.ends_at) <= new Date()) {
+    return interaction.reply({
+      content: '❌ This giveaway has expired. Winners will be announced shortly.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const userId = interaction.user.id;
+
+  // Prevent creator from entering their own giveaway
+  if (giveaway.creator_id === userId) {
+    return interaction.reply({
+      content: '❌ You cannot enter your own giveaway!',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const {
+    hasEnteredGiveaway,
+    addGiveawayEntry,
+    removeGiveawayEntry,
+    getGiveawayEntryCount,
+  } = await import('../database/queries.js');
+
+  const alreadyEntered = hasEnteredGiveaway(id, userId);
+
+  if (alreadyEntered) {
+    // Toggle — remove entry
+    removeGiveawayEntry(id, userId);
+    const newCount = getGiveawayEntryCount(id);
+
+    // Update embed with new count
+    await updateGiveawayEmbed(interaction, giveaway, newCount);
+
+    return interaction.reply({
+      content: `❌ You have **left** the giveaway for **${giveaway.prize}**.\nClick the button again to re-enter.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // Add entry
+  addGiveawayEntry(id, userId);
+  const newCount = getGiveawayEntryCount(id);
+
+  // Update embed with new count
+  await updateGiveawayEmbed(interaction, giveaway, newCount);
+
+  const epoch = giveaway.ends_at
+    ? Math.floor(new Date(giveaway.ends_at).getTime() / 1000)
+    : null;
+
+  const timeText = epoch ? `\n⏰ Ends <t:${epoch}:R>` : '';
+
+  return interaction.reply({
+    content:
+      `✅ You have **entered** the giveaway for **${giveaway.prize}**! 🎉\n` +
+      `🎫 Total entries: **${newCount}**${timeText}\n\n` +
+      `_Click the button again to leave the giveaway._`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * Update the giveaway message embed with new entry count.
+ * Does NOT reply to interaction — caller handles that.
+ */
+async function updateGiveawayEmbed(interaction, giveaway, entryCount) {
+  try {
+    // If interaction is from a guild channel, we can edit directly
+    // If from DM somehow, skip
+    const msg = interaction.message;
+    if (!msg) return;
+
+    const { buildGiveawayEmbed, buildGiveawayButtons } = await import('../services/giveawayService.js');
+    const embed   = buildGiveawayEmbed(giveaway, entryCount, false);
+    const buttons = buildGiveawayButtons(giveaway.id, false);
+
+    await msg.edit({
+      embeds: [embed],
+      components: [buttons],
+    });
+  } catch (err) {
+    // Message may have been deleted — not critical
+    console.warn('[GIVEAWAY] Could not update entry count:', err.message);
+  }
 }

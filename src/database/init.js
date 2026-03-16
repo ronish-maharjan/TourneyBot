@@ -14,19 +14,19 @@ let db = null;
  * @returns {import('better-sqlite3').Database}
  */
 export function initializeDatabase() {
-  const dir = path.dirname(DATABASE_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+    const dir = path.dirname(DATABASE_PATH);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
 
-  db = new Database(DATABASE_PATH);
+    db = new Database(DATABASE_PATH);
 
-  // ── Pragmas ──────────────────────────────────────────────────
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+    // ── Pragmas ──────────────────────────────────────────────────
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
 
-  // ── Schema ───────────────────────────────────────────────────
-  db.exec(`
+    // ── Schema ───────────────────────────────────────────────────
+    db.exec(`
     -----------------------------------------------------------------
     -- TOURNAMENTS
     -----------------------------------------------------------------
@@ -152,10 +152,76 @@ export function initializeDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_autoroles_guild
       ON autoroles(guild_id);
+
+    -----------------------------------------------------------------
+    -- GIVEAWAY CONFIG
+    -----------------------------------------------------------------
+    CREATE TABLE IF NOT EXISTS giveaway_config (
+      guild_id        TEXT PRIMARY KEY,
+      staff_role_id   TEXT NOT NULL,
+      ping_role_id    TEXT
+    );
+
+    -----------------------------------------------------------------
+    -- GIVEAWAY CHANNELS (multiple per guild)
+    -----------------------------------------------------------------
+    CREATE TABLE IF NOT EXISTS giveaway_channels (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id   TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      UNIQUE(guild_id, channel_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_giveaway_channels_guild
+      ON giveaway_channels(guild_id);
+
+    -----------------------------------------------------------------
+    -- GIVEAWAYS
+    -----------------------------------------------------------------
+    CREATE TABLE IF NOT EXISTS giveaways (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id            TEXT    NOT NULL,
+      creator_id          TEXT    NOT NULL,
+      prize               TEXT    NOT NULL,
+      description         TEXT    DEFAULT '',
+      winner_count        INTEGER NOT NULL DEFAULT 1,
+      duration_minutes    INTEGER NOT NULL DEFAULT 60,
+      status              TEXT    NOT NULL DEFAULT 'pending',
+      channel_id          TEXT,
+      message_id          TEXT,
+      review_message_id   TEXT,
+      review_channel_id   TEXT,
+      ends_at             TEXT,
+      created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+      ended_at            TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_giveaways_guild
+      ON giveaways(guild_id);
+
+    CREATE INDEX IF NOT EXISTS idx_giveaways_status
+      ON giveaways(guild_id, status);
+
+    -----------------------------------------------------------------
+    -- GIVEAWAY ENTRIES
+    -----------------------------------------------------------------
+    CREATE TABLE IF NOT EXISTS giveaway_entries (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      giveaway_id   INTEGER NOT NULL,
+      user_id       TEXT    NOT NULL,
+      entered_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (giveaway_id) REFERENCES giveaways(id) ON DELETE CASCADE,
+      UNIQUE(giveaway_id, user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_giveaway_entries_giveaway
+      ON giveaway_entries(giveaway_id);
+
+
   `);
 
-  console.log('[DB] Database initialised successfully.');
-  return db;
+    console.log('[DB] Database initialised successfully.');
+    return db;
 }
 
 /**
@@ -163,20 +229,20 @@ export function initializeDatabase() {
  * @returns {import('better-sqlite3').Database}
  */
 export function getDatabase() {
-  if (!db) {
-    throw new Error('Database not initialised. Call initializeDatabase() first.');
-  }
-  return db;
+    if (!db) {
+        throw new Error('Database not initialised. Call initializeDatabase() first.');
+    }
+    return db;
 }
 
 /**
  * Gracefully close the database.
  */
 export function closeDatabase() {
-  if (db) {
-    db.close();
-    db = null;
-    console.log('[DB] Database closed.');
-  }
+    if (db) {
+        db.close();
+        db = null;
+        console.log('[DB] Database closed.');
+    }
 }
 

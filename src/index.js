@@ -1,5 +1,6 @@
 // ─── src/index.js ────────────────────────────────────────────────
 // Entry point: initialises DB, loads commands, wires events, logs in.
+import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
 import { handleMemberJoin } from './events/guildMemberAdd.js';
 import "dotenv/config";
 import { Client, Collection, GatewayIntentBits, Events } from "discord.js";
@@ -36,7 +37,10 @@ await loadCommands(client);
 
 // ── Events ──────────────────────────────────────────────────────
 // Use Events.ClientReady instead of 'ready' (deprecated in v15)
-client.once(Events.ClientReady, () => handleReady(client));
+client.once(Events.ClientReady, () => {
+  handleReady(client);
+  startGiveawayTimer(client);
+});
 client.on(Events.InteractionCreate, interaction => handleInteraction(interaction, client));
 client.on(Events.GuildMemberAdd, member => handleMemberJoin(member));
 
@@ -45,7 +49,8 @@ client.login(DISCORD_TOKEN);
 
 // ── Graceful shutdown ───────────────────────────────────────────
 const shutdown = () => {
-  console.log("\n[BOT] Shutting down…");
+  console.log('\n[BOT] Shutting down…');
+  stopGiveawayTimer();
   closeDatabase();
   client.destroy();
   process.exit(0);

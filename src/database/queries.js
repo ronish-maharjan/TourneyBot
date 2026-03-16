@@ -944,3 +944,189 @@ export function clearAutoroles(guildId) {
     'DELETE FROM autoroles WHERE guild_id = ?'
   ).run(guildId);
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  GIVEAWAY CONFIG QUERIES
+// ═════════════════════════════════════════════════════════════════
+
+export function getGiveawayConfig(guildId) {
+  const db = getDatabase();
+  return db.prepare('SELECT * FROM giveaway_config WHERE guild_id = ?').get(guildId);
+}
+
+export function setGiveawayConfig(guildId, staffRoleId, pingRoleId = null) {
+  const db = getDatabase();
+  return db.prepare(`
+    INSERT INTO giveaway_config (guild_id, staff_role_id, ping_role_id)
+    VALUES (?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET staff_role_id = ?, ping_role_id = ?
+  `).run(guildId, staffRoleId, pingRoleId, staffRoleId, pingRoleId);
+}
+
+export function updateGiveawayPingRole(guildId, pingRoleId) {
+  const db = getDatabase();
+  return db.prepare(
+    'UPDATE giveaway_config SET ping_role_id = ? WHERE guild_id = ?'
+  ).run(pingRoleId, guildId);
+}
+
+export function deleteGiveawayConfig(guildId) {
+  const db = getDatabase();
+  return db.prepare('DELETE FROM giveaway_config WHERE guild_id = ?').run(guildId);
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  GIVEAWAY CHANNEL QUERIES
+// ═════════════════════════════════════════════════════════════════
+
+export function addGiveawayChannel(guildId, channelId) {
+  const db = getDatabase();
+  return db.prepare(
+    'INSERT OR IGNORE INTO giveaway_channels (guild_id, channel_id) VALUES (?, ?)'
+  ).run(guildId, channelId);
+}
+
+export function removeGiveawayChannel(guildId, channelId) {
+  const db = getDatabase();
+  return db.prepare(
+    'DELETE FROM giveaway_channels WHERE guild_id = ? AND channel_id = ?'
+  ).run(guildId, channelId);
+}
+
+export function getGiveawayChannels(guildId) {
+  const db = getDatabase();
+  return db.prepare(
+    'SELECT * FROM giveaway_channels WHERE guild_id = ?'
+  ).all(guildId);
+}
+
+export function clearGiveawayChannels(guildId) {
+  const db = getDatabase();
+  return db.prepare('DELETE FROM giveaway_channels WHERE guild_id = ?').run(guildId);
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  GIVEAWAY QUERIES
+// ═════════════════════════════════════════════════════════════════
+
+export function createGiveaway({ guildId, creatorId, prize, description, winnerCount, durationMinutes }) {
+  const db = getDatabase();
+  return db.prepare(`
+    INSERT INTO giveaways (guild_id, creator_id, prize, description, winner_count, duration_minutes)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(guildId, creatorId, prize, description, winnerCount, durationMinutes);
+}
+
+export function getGiveawayById(id) {
+  const db = getDatabase();
+  return db.prepare('SELECT * FROM giveaways WHERE id = ?').get(id);
+}
+
+export function getActiveGiveaways(guildId) {
+  const db = getDatabase();
+  return db.prepare(
+    "SELECT * FROM giveaways WHERE guild_id = ? AND status = 'approved' ORDER BY ends_at ASC"
+  ).all(guildId);
+}
+
+export function getPendingGiveaways(guildId) {
+  const db = getDatabase();
+  return db.prepare(
+    "SELECT * FROM giveaways WHERE guild_id = ? AND status = 'pending' ORDER BY created_at ASC"
+  ).all(guildId);
+}
+
+export function getExpiredGiveaways() {
+  const db = getDatabase();
+  return db.prepare(`
+    SELECT * FROM giveaways
+    WHERE status = 'approved'
+      AND ends_at IS NOT NULL
+      AND datetime(ends_at) <= datetime('now')
+  `).all();
+}
+
+export function updateGiveawayStatus(id, status) {
+  const db = getDatabase();
+  return db.prepare('UPDATE giveaways SET status = ? WHERE id = ?').run(status, id);
+}
+
+export function updateGiveawayApproval(id, { channelId, messageId, endsAt }) {
+  const db = getDatabase();
+  return db.prepare(`
+    UPDATE giveaways SET
+      status     = 'approved',
+      channel_id = ?,
+      message_id = ?,
+      ends_at    = ?
+    WHERE id = ?
+  `).run(channelId, messageId, endsAt, id);
+}
+
+export function updateGiveawayEnd(id) {
+  const db = getDatabase();
+  return db.prepare(`
+    UPDATE giveaways SET
+      status   = 'ended',
+      ended_at = datetime('now')
+    WHERE id = ?
+  `).run(id);
+}
+
+export function updateGiveawayReviewMessage(id, reviewMessageId, reviewChannelId) {
+  const db = getDatabase();
+  return db.prepare(
+    'UPDATE giveaways SET review_message_id = ?, review_channel_id = ? WHERE id = ?'
+  ).run(reviewMessageId, reviewChannelId, id);
+}
+
+export function updateGiveawayMessage(id, messageId) {
+  const db = getDatabase();
+  return db.prepare('UPDATE giveaways SET message_id = ? WHERE id = ?').run(messageId, id);
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  GIVEAWAY ENTRY QUERIES
+// ═════════════════════════════════════════════════════════════════
+
+export function addGiveawayEntry(giveawayId, userId) {
+  const db = getDatabase();
+  return db.prepare(
+    'INSERT OR IGNORE INTO giveaway_entries (giveaway_id, user_id) VALUES (?, ?)'
+  ).run(giveawayId, userId);
+}
+
+export function removeGiveawayEntry(giveawayId, userId) {
+  const db = getDatabase();
+  return db.prepare(
+    'DELETE FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?'
+  ).run(giveawayId, userId);
+}
+
+export function getGiveawayEntries(giveawayId) {
+  const db = getDatabase();
+  return db.prepare(
+    'SELECT * FROM giveaway_entries WHERE giveaway_id = ? ORDER BY entered_at ASC'
+  ).all(giveawayId);
+}
+
+export function getGiveawayEntryCount(giveawayId) {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT COUNT(*) as count FROM giveaway_entries WHERE giveaway_id = ?'
+  ).get(giveawayId);
+  return row?.count ?? 0;
+}
+
+export function hasEnteredGiveaway(giveawayId, userId) {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT 1 FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?'
+  ).get(giveawayId, userId);
+  return !!row;
+}
+
+export function deleteGiveawayEntries(giveawayId) {
+  const db = getDatabase();
+  return db.prepare('DELETE FROM giveaway_entries WHERE giveaway_id = ?').run(giveawayId);
+}
