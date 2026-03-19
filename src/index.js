@@ -1,26 +1,23 @@
-// ─── src/index.js ────────────────────────────────────────────────
-// Entry point: initialises DB, loads commands, wires events, logs in.
-import { cleanStaleLocks } from './services/lockService.js';
-import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
+import 'dotenv/config';
+import { Client, Collection, GatewayIntentBits, Events } from 'discord.js';
+import { initializeDatabase, closeDatabase } from './database/init.js';
+import { loadCommands } from './utils/helpers.js';
+import { handleReady } from './events/ready.js';
+import { handleInteraction } from './events/interactionCreate.js';
 import { handleMemberJoin } from './events/guildMemberAdd.js';
-import "dotenv/config";
-import { Client, Collection, GatewayIntentBits, Events } from "discord.js";
-import { initializeDatabase, closeDatabase } from "./database/init.js";
-import { loadCommands } from "./utils/helpers.js";
-import { handleReady } from "./events/ready.js";
-import { handleInteraction } from "./events/interactionCreate.js";
+import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
+import { cleanStaleLocks } from './services/lockService.js';
+import { handleGuildCreate } from './events/guildCreate.js';
 
-// ── Validate env ────────────────────────────────────────────────
 const { DISCORD_TOKEN } = process.env;
 if (!DISCORD_TOKEN) {
-  console.error("[FATAL] DISCORD_TOKEN is not set in .env");
+  console.error('[FATAL] DISCORD_TOKEN is not set in .env');
   process.exit(1);
 }
 
-// ── Bootstrap database ──────────────────────────────────────────
-initializeDatabase();
+// ── Bootstrap database (async now) ──────────────────────────────
+await initializeDatabase();
 
-// ── Create Discord client ───────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -30,33 +27,26 @@ const client = new Client({
   ],
 });
 
-// Collection that maps command-name → { data, execute }
 client.commands = new Collection();
-
-// ── Load commands from disk ─────────────────────────────────────
 await loadCommands(client);
 
-// ── Events ──────────────────────────────────────────────────────
-// Use Events.ClientReady instead of 'ready' (deprecated in v15)
 client.once(Events.ClientReady, () => {
   handleReady(client);
   startGiveawayTimer(client);
-  // Clean stale locks every 2 minutes
   setInterval(() => cleanStaleLocks(), 120_000);
 });
+
 client.on(Events.InteractionCreate, interaction => handleInteraction(interaction, client));
 client.on(Events.GuildMemberAdd, member => handleMemberJoin(member));
-
-// ── Login ───────────────────────────────────────────────────────
+client.on(Events.GuildCreate, guild => handleGuildCreate(guild));
 client.login(DISCORD_TOKEN);
 
-// ── Graceful shutdown ───────────────────────────────────────────
-const shutdown = () => {
+const shutdown = async () => {
   console.log('\n[BOT] Shutting down…');
   stopGiveawayTimer();
-  closeDatabase();
+  await closeDatabase();
   client.destroy();
   process.exit(0);
 };
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

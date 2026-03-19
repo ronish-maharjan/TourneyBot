@@ -1,35 +1,64 @@
 // ─── src/database/init.js ────────────────────────────────────────
-// Bootstraps the SQLite database using better-sqlite3.
+// PostgreSQL database connection and schema management.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import Database from 'better-sqlite3';
-import { DATABASE_PATH } from '../config.js';
+import pg from 'pg';
 
-/** @type {import('better-sqlite3').Database | null} */
-let db = null;
+const { Pool } = pg;
+
+/** @type {pg.Pool | null} */
+let pool = null;
 
 /**
- * Initialise (or re-open) the database and ensure all tables exist.
- * @returns {import('better-sqlite3').Database}
+ * Initialise the PostgreSQL connection pool and run schema migrations.
+ * @returns {Promise<pg.Pool>}
  */
-export function initializeDatabase() {
-    const dir = path.dirname(DATABASE_PATH);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+export async function initializeDatabase() {
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+        throw new Error('DATABASE_URL is not set in .env');
     }
 
-    db = new Database(DATABASE_PATH);
+    /** for local db
+    pool = new Pool({
+    connectionString,
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+  });
+     **/
+    const isAiven = connectionString.includes("aivencloud");
 
-    // ── Pragmas ──────────────────────────────────────────────────
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
+    pool = new Pool({
+        connectionString,
+        max: 10,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+        ssl: isAiven
+        ? { rejectUnauthorized: false }
+        : false
+    });
+    // Test connection
+    const client = await pool.connect();
+    try {
+        await client.query('SELECT NOW()');
+        console.log('[DB] Connected to PostgreSQL');
+    } finally {
+        client.release();
+    }
 
-    // ── Schema ───────────────────────────────────────────────────
-    db.exec(`
-    -----------------------------------------------------------------
-    -- TOURNAMENTS
-    -----------------------------------------------------------------
+    // Run schema
+    await runSchema();
+
+    console.log('[DB] Database initialised successfully.');
+    return pool;
+}
+
+/**
+ * Run schema migrations.
+ */
+async function runSchema() {
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS tournaments (
       id                        TEXT PRIMARY KEY,
       guild_id                  TEXT    NOT NULL,
@@ -68,15 +97,14 @@ export function initializeDatabase() {
       total_rounds              INTEGER NOT NULL DEFAULT 0,
 
       created_by                TEXT    NOT NULL,
-      created_at                TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
+      created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 
-    -----------------------------------------------------------------
-    -- PARTICIPANTS
-    -----------------------------------------------------------------
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS participants (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      tournament_id   TEXT    NOT NULL,
+      id              SERIAL PRIMARY KEY,
+      tournament_id   TEXT    NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
       user_id         TEXT    NOT NULL,
       username        TEXT    NOT NULL,
       display_name    TEXT,
@@ -87,18 +115,15 @@ export function initializeDatabase() {
       losses          INTEGER NOT NULL DEFAULT 0,
       draws           INTEGER NOT NULL DEFAULT 0,
       matches_played  INTEGER NOT NULL DEFAULT 0,
-      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
-
-      FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(tournament_id, user_id)
-    );
+    )
+  `);
 
-    -----------------------------------------------------------------
-    -- MATCHES
-    -----------------------------------------------------------------
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS matches (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      tournament_id     TEXT    NOT NULL,
+      id                SERIAL PRIMARY KEY,
+      tournament_id     TEXT    NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
       round             INTEGER NOT NULL,
       match_number      INTEGER NOT NULL,
       player1_id        TEXT,
@@ -110,76 +135,40 @@ export function initializeDatabase() {
       status            TEXT    NOT NULL DEFAULT 'pending',
       thread_id         TEXT,
       score_message_id  TEXT,
-      created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
-      completed_at      TEXT,
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at      TIMESTAMPTZ
+    )
+  `);
 
-      FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
-    );
-
-    -----------------------------------------------------------------
-    -- INDEXES
-    -----------------------------------------------------------------
-    CREATE INDEX IF NOT EXISTS idx_tournaments_guild
-      ON tournaments(guild_id);
-
-    CREATE INDEX IF NOT EXISTS idx_participants_tournament
-      ON participants(tournament_id);
-
-    CREATE INDEX IF NOT EXISTS idx_participants_user
-      ON participants(tournament_id, user_id);
-
-    CREATE INDEX IF NOT EXISTS idx_matches_tournament
-      ON matches(tournament_id);
-
-    CREATE INDEX IF NOT EXISTS idx_matches_round
-      ON matches(tournament_id, round);
-
-    CREATE INDEX IF NOT EXISTS idx_matches_players
-      ON matches(tournament_id, player1_id, player2_id);
-
-    CREATE INDEX IF NOT EXISTS idx_matches_status
-      ON matches(tournament_id, status);
-
-    -----------------------------------------------------------------
-    -- AUTOROLES
-    -----------------------------------------------------------------
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS autoroles (
-      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      id        SERIAL PRIMARY KEY,
       guild_id  TEXT NOT NULL,
       role_id   TEXT NOT NULL,
       UNIQUE(guild_id, role_id)
-    );
+    )
+  `);
 
-    CREATE INDEX IF NOT EXISTS idx_autoroles_guild
-      ON autoroles(guild_id);
-
-    -----------------------------------------------------------------
-    -- GIVEAWAY CONFIG
-    -----------------------------------------------------------------
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS giveaway_config (
       guild_id        TEXT PRIMARY KEY,
       staff_role_id   TEXT NOT NULL,
       ping_role_id    TEXT
-    );
+    )
+  `);
 
-    -----------------------------------------------------------------
-    -- GIVEAWAY CHANNELS (multiple per guild)
-    -----------------------------------------------------------------
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS giveaway_channels (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      id         SERIAL PRIMARY KEY,
       guild_id   TEXT NOT NULL,
       channel_id TEXT NOT NULL,
       UNIQUE(guild_id, channel_id)
-    );
+    )
+  `);
 
-    CREATE INDEX IF NOT EXISTS idx_giveaway_channels_guild
-      ON giveaway_channels(guild_id);
-
-    -----------------------------------------------------------------
-    -- GIVEAWAYS
-    -----------------------------------------------------------------
+    await pool.query(`
     CREATE TABLE IF NOT EXISTS giveaways (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      id                  SERIAL PRIMARY KEY,
       guild_id            TEXT    NOT NULL,
       creator_id          TEXT    NOT NULL,
       prize               TEXT    NOT NULL,
@@ -191,58 +180,61 @@ export function initializeDatabase() {
       message_id          TEXT,
       review_message_id   TEXT,
       review_channel_id   TEXT,
-      ends_at             TEXT,
-      created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
-      ended_at            TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_giveaways_guild
-      ON giveaways(guild_id);
-
-    CREATE INDEX IF NOT EXISTS idx_giveaways_status
-      ON giveaways(guild_id, status);
-
-    -----------------------------------------------------------------
-    -- GIVEAWAY ENTRIES
-    -----------------------------------------------------------------
-    CREATE TABLE IF NOT EXISTS giveaway_entries (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      giveaway_id   INTEGER NOT NULL,
-      user_id       TEXT    NOT NULL,
-      entered_at    TEXT    NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (giveaway_id) REFERENCES giveaways(id) ON DELETE CASCADE,
-      UNIQUE(giveaway_id, user_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_giveaway_entries_giveaway
-      ON giveaway_entries(giveaway_id);
-
-
+      ends_at             TIMESTAMPTZ,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ended_at            TIMESTAMPTZ
+    )
   `);
 
-    console.log('[DB] Database initialised successfully.');
-    return db;
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS giveaway_entries (
+      id            SERIAL PRIMARY KEY,
+      giveaway_id   INTEGER NOT NULL REFERENCES giveaways(id) ON DELETE CASCADE,
+      user_id       TEXT    NOT NULL,
+      entered_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(giveaway_id, user_id)
+    )
+  `);
+
+    // Indexes
+    const indexes = [
+        'CREATE INDEX IF NOT EXISTS idx_tournaments_guild ON tournaments(guild_id)',
+        'CREATE INDEX IF NOT EXISTS idx_participants_tournament ON participants(tournament_id)',
+        'CREATE INDEX IF NOT EXISTS idx_participants_user ON participants(tournament_id, user_id)',
+        'CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id)',
+        'CREATE INDEX IF NOT EXISTS idx_matches_round ON matches(tournament_id, round)',
+        'CREATE INDEX IF NOT EXISTS idx_matches_players ON matches(tournament_id, player1_id, player2_id)',
+        'CREATE INDEX IF NOT EXISTS idx_matches_status ON matches(tournament_id, status)',
+        'CREATE INDEX IF NOT EXISTS idx_autoroles_guild ON autoroles(guild_id)',
+        'CREATE INDEX IF NOT EXISTS idx_giveaway_channels_guild ON giveaway_channels(guild_id)',
+        'CREATE INDEX IF NOT EXISTS idx_giveaways_guild ON giveaways(guild_id)',
+        'CREATE INDEX IF NOT EXISTS idx_giveaways_status ON giveaways(guild_id, status)',
+        'CREATE INDEX IF NOT EXISTS idx_giveaway_entries_giveaway ON giveaway_entries(giveaway_id)',
+    ];
+
+    for (const idx of indexes) {
+        await pool.query(idx);
+    }
 }
 
 /**
- * Return the active database handle.
- * @returns {import('better-sqlite3').Database}
+ * Return the active pool.
+ * @returns {pg.Pool}
  */
-export function getDatabase() {
-    if (!db) {
+export function getPool() {
+    if (!pool) {
         throw new Error('Database not initialised. Call initializeDatabase() first.');
     }
-    return db;
+    return pool;
 }
 
 /**
- * Gracefully close the database.
+ * Gracefully close the pool.
  */
-export function closeDatabase() {
-    if (db) {
-        db.close();
-        db = null;
+export async function closeDatabase() {
+    if (pool) {
+        await pool.end();
+        pool = null;
         console.log('[DB] Database closed.');
     }
 }
-

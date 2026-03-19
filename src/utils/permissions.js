@@ -1,11 +1,10 @@
 // ─── src/utils/permissions.js ────────────────────────────────────
-// Centralised permission checks for tournament admin operations.
 
-import { ROLE_NAMES } from "../config.js";
+import { ROLE_NAMES } from '../config.js';
 
 /**
  * Is the member allowed to run organiser-level commands?
- * True if the member is the guild owner OR has the TournamentOrganizer role.
+ * True if: guild owner OR has TournamentOrganizer role OR has Administrator permission.
  *
  * @param {import('discord.js').GuildMember} member
  * @returns {boolean}
@@ -13,23 +12,19 @@ import { ROLE_NAMES } from "../config.js";
 export function isOrganizer(member) {
   if (!member || !member.guild) return false;
 
-  // Guild owner always has full access
+  // Guild owner always has access
   if (member.id === member.guild.ownerId) return true;
 
-  // Check for TournamentOrganizer role by name
-  const role = member.guild.roles.cache.find(
-    (r) => r.name === ROLE_NAMES.ORGANIZER,
-  );
+  // Administrator permission
+  if (member.permissions.has('Administrator')) return true;
 
+  // Check for TournamentOrganizer role by name
+  const role = member.guild.roles.cache.find(r => r.name === ROLE_NAMES.ORGANIZER);
   return role ? member.roles.cache.has(role.id) : false;
 }
 
 /**
  * Does the member have a specific role (by Discord role ID)?
- *
- * @param {import('discord.js').GuildMember} member
- * @param {string} roleId
- * @returns {boolean}
  */
 export function hasRole(member, roleId) {
   if (!member || !roleId) return false;
@@ -37,10 +32,7 @@ export function hasRole(member, roleId) {
 }
 
 /**
- * Quick check: is the member the server owner?
- *
- * @param {import('discord.js').GuildMember} member
- * @returns {boolean}
+ * Is the member the server owner?
  */
 export function isGuildOwner(member) {
   return member?.id === member?.guild?.ownerId;

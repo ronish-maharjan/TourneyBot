@@ -1,1132 +1,574 @@
 // ─── src/database/queries.js ─────────────────────────────────────
-// Pure data-access functions.  Every function is synchronous because
-// node:sqlite (DatabaseSync) is synchronous.  They are called from
-// async Discord.js handlers — that is perfectly fine.
+// All database queries. Every function is async (PostgreSQL).
 
-import { getDatabase } from "./init.js";
+import { getPool } from './init.js';
+
+// Helper: single row
+async function queryOne(sql, params = []) {
+  const { rows } = await getPool().query(sql, params);
+  return rows[0] || undefined;
+}
+
+// Helper: all rows
+async function queryAll(sql, params = []) {
+  const { rows } = await getPool().query(sql, params);
+  return rows;
+}
+
+// Helper: execute (returns rowCount)
+async function execute(sql, params = []) {
+  const result = await getPool().query(sql, params);
+  return result;
+}
 
 // ═════════════════════════════════════════════════════════════════
 //  TOURNAMENT QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * Insert a new tournament row.
- * @param {object} t
- * @returns {{ changes: number, lastInsertRowid: number }}
- */
-export function createTournament({ id, guildId, name, createdBy }) {
-    const db = getDatabase();
-    const stmt = db.prepare(
-        `INSERT INTO tournaments (id, guild_id, name, created_by)
-     VALUES (?, ?, ?, ?)`,
-    );
-    return stmt.run(id, guildId, name, createdBy);
-}
-
-/**
- * Fetch a single tournament by its UUID.
- * @param {string} id
- * @returns {object|undefined}
- */
-export function getTournamentById(id) {
-    const db = getDatabase();
-    return db.prepare("SELECT * FROM tournaments WHERE id = ?").get(id);
-}
-
-/**
- * Find which tournament a Discord channel belongs to.
- * Checks every stored channel-ID column + the category.
- * @param {string} channelId
- * @returns {object|undefined}
- */
-export function getTournamentByChannelId(channelId) {
-  const db = getDatabase();
-  const stmt = db.prepare(`
-    SELECT * FROM tournaments
-    WHERE category_id              = ?
-       OR leaderboard_channel_id   = ?
-       OR admin_channel_id         = ?
-       OR notice_channel_id        = ?
-       OR registration_channel_id  = ?
-       OR participation_channel_id = ?
-       OR bracket_channel_id       = ?
-       OR result_channel_id        = ?
-       OR chat_channel_id          = ?
-       OR match_channel_id         = ?
-       OR rules_channel_id         = ?
-  `);
-  return stmt.get(
-    channelId, channelId, channelId, channelId, channelId,
-    channelId, channelId, channelId, channelId, channelId,
-    channelId
+export async function createTournament({ id, guildId, name, createdBy }) {
+  return execute(
+    'INSERT INTO tournaments (id, guild_id, name, created_by) VALUES ($1, $2, $3, $4)',
+    [id, guildId, name, createdBy]
   );
 }
 
-/**
- * All tournaments in a guild (any status).
- * @param {string} guildId
- * @returns {object[]}
- */
-export function getTournamentsByGuild(guildId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "SELECT * FROM tournaments WHERE guild_id = ? ORDER BY created_at DESC",
-        )
-        .all(guildId);
+export async function getTournamentById(id) {
+  return queryOne('SELECT * FROM tournaments WHERE id = $1', [id]);
 }
 
-/**
- * Tournaments that are not completed / cancelled.
- * @param {string} guildId
- * @returns {object[]}
- */
-export function getActiveTournamentsByGuild(guildId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
+export async function getTournamentByChannelId(channelId) {
+  return queryOne(`
     SELECT * FROM tournaments
-    WHERE guild_id = ?
-      AND status NOT IN ('completed', 'cancelled')
-    ORDER BY created_at DESC
-  `,
-        )
-        .all(guildId);
+    WHERE category_id = $1 OR leaderboard_channel_id = $1 OR admin_channel_id = $1
+       OR notice_channel_id = $1 OR registration_channel_id = $1 OR participation_channel_id = $1
+       OR bracket_channel_id = $1 OR result_channel_id = $1 OR chat_channel_id = $1
+       OR match_channel_id = $1 OR rules_channel_id = $1
+  `, [channelId]);
 }
 
-/**
- * Update editable config fields (name, max_players, team_size, best_of, rules).
- */
-export function updateTournamentConfig(
-    id,
-    { name, maxPlayers, teamSize, bestOf, rules },
-) {
-    const db = getDatabase();
-    const stmt = db.prepare(`
-    UPDATE tournaments
-    SET name        = ?,
-        max_players = ?,
-        team_size   = ?,
-        best_of     = ?,
-        rules       = ?
-    WHERE id = ?
-  `);
-    return stmt.run(name, maxPlayers, teamSize, bestOf, rules ?? "", id);
-}
-/**
- * Change tournament status.
- * @param {string} id
- * @param {string} status  One of TOURNAMENT_STATUS values.
- */
-export function updateTournamentStatus(id, status) {
-    const db = getDatabase();
-    return db
-        .prepare("UPDATE tournaments SET status = ? WHERE id = ?")
-        .run(status, id);
+export async function getTournamentsByGuild(guildId) {
+  return queryAll(
+    'SELECT * FROM tournaments WHERE guild_id = $1 ORDER BY created_at DESC',
+    [guildId]
+  );
 }
 
-/**
- * Persist all channel Discord IDs after creation.
- * @param {string} id  Tournament ID.
- * @param {object} ch  Map of channel names → Discord IDs.
- */
-export function updateTournamentChannels(id, {
-    categoryId,
-    leaderboardChannelId,
-    adminChannelId,
-    noticeChannelId,
-    registrationChannelId,
-    participationChannelId,
-    bracketChannelId,
-    resultChannelId,
-    chatChannelId,
-    matchChannelId,
-    rulesChannelId,
+export async function getActiveTournamentsByGuild(guildId) {
+  return queryAll(
+    "SELECT * FROM tournaments WHERE guild_id = $1 AND status NOT IN ('completed', 'cancelled') ORDER BY created_at DESC",
+    [guildId]
+  );
+}
+
+export async function updateTournamentConfig(id, { name, maxPlayers, teamSize, bestOf, rules }) {
+  return execute(
+    'UPDATE tournaments SET name = $1, max_players = $2, team_size = $3, best_of = $4, rules = $5 WHERE id = $6',
+    [name, maxPlayers, teamSize, bestOf, rules ?? '', id]
+  );
+}
+
+export async function updateTournamentStatus(id, status) {
+  return execute('UPDATE tournaments SET status = $1 WHERE id = $2', [status, id]);
+}
+
+export async function updateTournamentChannels(id, {
+  categoryId, leaderboardChannelId, adminChannelId, noticeChannelId,
+  registrationChannelId, participationChannelId, bracketChannelId,
+  resultChannelId, chatChannelId, matchChannelId, rulesChannelId,
 }) {
-    const db = getDatabase();
-    const stmt = db.prepare(`
+  return execute(`
     UPDATE tournaments SET
-      category_id              = ?,
-      leaderboard_channel_id   = ?,
-      admin_channel_id         = ?,
-      notice_channel_id        = ?,
-      registration_channel_id  = ?,
-      participation_channel_id = ?,
-      bracket_channel_id       = ?,
-      result_channel_id        = ?,
-      chat_channel_id          = ?,
-      match_channel_id         = ?,
-      rules_channel_id         = ?
-    WHERE id = ?
-  `);
-    return stmt.run(
-        categoryId,
-        leaderboardChannelId,
-        adminChannelId,
-        noticeChannelId,
-        registrationChannelId,
-        participationChannelId,
-        bracketChannelId,
-        resultChannelId,
-        chatChannelId,
-        matchChannelId,
-        rulesChannelId,
-        id
-    );
+      category_id=$1, leaderboard_channel_id=$2, admin_channel_id=$3,
+      notice_channel_id=$4, registration_channel_id=$5, participation_channel_id=$6,
+      bracket_channel_id=$7, result_channel_id=$8, chat_channel_id=$9,
+      match_channel_id=$10, rules_channel_id=$11
+    WHERE id = $12
+  `, [categoryId, leaderboardChannelId, adminChannelId, noticeChannelId,
+      registrationChannelId, participationChannelId, bracketChannelId,
+      resultChannelId, chatChannelId, matchChannelId, rulesChannelId, id]);
 }
 
-/**
- * Persist role Discord IDs.
- */
-export function updateTournamentRoles(
-    id,
-    { organizerRoleId, participantRoleId, spectatorRoleId },
-) {
-    const db = getDatabase();
-    const stmt = db.prepare(`
-    UPDATE tournaments SET
-      organizer_role_id   = ?,
-      participant_role_id = ?,
-      spectator_role_id   = ?
-    WHERE id = ?
-  `);
-    return stmt.run(organizerRoleId, participantRoleId, spectatorRoleId, id);
+export async function updateTournamentRoles(id, { organizerRoleId, participantRoleId, spectatorRoleId }) {
+  return execute(
+    'UPDATE tournaments SET organizer_role_id=$1, participant_role_id=$2, spectator_role_id=$3 WHERE id=$4',
+    [organizerRoleId, participantRoleId, spectatorRoleId, id]
+  );
 }
 
-/**
- * Update a single message-ID column.
- * @param {string} id       Tournament ID.
- * @param {string} field    Column name (must be one of the *_message_id columns).
- * @param {string} messageId Discord message snowflake.
- */
 const VALID_MESSAGE_FIELDS = new Set([
-  'leaderboard_message_id',
-  'bracket_message_id',
-  'participation_message_id',
-  'admin_message_id',
-  'registration_message_id',
-  'rules_message_id',
+  'leaderboard_message_id', 'bracket_message_id', 'participation_message_id',
+  'admin_message_id', 'registration_message_id', 'rules_message_id',
 ]);
 
-export function updateTournamentMessageId(id, field, messageId) {
-    if (!VALID_MESSAGE_FIELDS.has(field)) {
-        throw new Error(`Invalid message field: ${field}`);
-    }
-    const db = getDatabase();
-    // Field is validated above — safe to interpolate.
-    return db
-        .prepare(`UPDATE tournaments SET ${field} = ? WHERE id = ?`)
-        .run(messageId, id);
+export async function updateTournamentMessageId(id, field, messageId) {
+  if (!VALID_MESSAGE_FIELDS.has(field)) throw new Error(`Invalid message field: ${field}`);
+  return execute(`UPDATE tournaments SET ${field} = $1 WHERE id = $2`, [messageId, id]);
 }
 
-/**
- * Update round tracking.
- */
-export function updateTournamentRound(id, currentRound, totalRounds) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "UPDATE tournaments SET current_round = ?, total_rounds = ? WHERE id = ?",
-        )
-        .run(currentRound, totalRounds, id);
+export async function updateTournamentRound(id, currentRound, totalRounds) {
+  return execute(
+    'UPDATE tournaments SET current_round = $1, total_rounds = $2 WHERE id = $3',
+    [currentRound, totalRounds, id]
+  );
 }
 
-/**
- * Hard-delete a tournament row.  Cascades to participants & matches.
- */
-export function deleteTournament(id) {
-    const db = getDatabase();
-    return db.prepare("DELETE FROM tournaments WHERE id = ?").run(id);
+export async function deleteTournament(id) {
+  return execute('DELETE FROM tournaments WHERE id = $1', [id]);
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  PARTICIPANT QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * Register a user for a tournament.
- */
-export function addParticipant({
-    tournamentId,
-    userId,
-    username,
-    displayName,
-    role = "participant",
-}) {
-    const db = getDatabase();
-    const stmt = db.prepare(`
-    INSERT INTO participants (tournament_id, user_id, username, display_name, role)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-    return stmt.run(tournamentId, userId, username, displayName, role);
+export async function addParticipant({ tournamentId, userId, username, displayName, role = 'participant' }) {
+  return execute(
+    'INSERT INTO participants (tournament_id, user_id, username, display_name, role) VALUES ($1, $2, $3, $4, $5)',
+    [tournamentId, userId, username, displayName, role]
+  );
 }
 
-/**
- * Unregister a user (hard delete).
- */
-export function removeParticipant(tournamentId, userId) {
-    const db = getDatabase();
-    return db
-        .prepare("DELETE FROM participants WHERE tournament_id = ? AND user_id = ?")
-        .run(tournamentId, userId);
+export async function removeParticipant(tournamentId, userId) {
+  return execute(
+    'DELETE FROM participants WHERE tournament_id = $1 AND user_id = $2',
+    [tournamentId, userId]
+  );
 }
 
-/**
- * Get one participant row.
- */
-export function getParticipant(tournamentId, userId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "SELECT * FROM participants WHERE tournament_id = ? AND user_id = ?",
-        )
-        .get(tournamentId, userId);
+export async function getParticipant(tournamentId, userId) {
+  return queryOne(
+    'SELECT * FROM participants WHERE tournament_id = $1 AND user_id = $2',
+    [tournamentId, userId]
+  );
 }
 
-/**
- * All participants (any role / status).
- */
-export function getParticipantsByTournament(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `SELECT * FROM participants
-     WHERE tournament_id = ?
-     ORDER BY points DESC, wins DESC, username ASC`,
-        )
-        .all(tournamentId);
+export async function getParticipantsByTournament(tournamentId) {
+  return queryAll(
+    'SELECT * FROM participants WHERE tournament_id = $1 ORDER BY points DESC, wins DESC, username ASC',
+    [tournamentId]
+  );
 }
 
-/**
- * Only active participants (role = 'participant', status = 'active').
- */
-export function getActiveParticipants(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM participants
-    WHERE tournament_id = ?
-      AND role   = 'participant'
-      AND status = 'active'
-    ORDER BY points DESC, wins DESC, username ASC
-  `,
-        )
-        .all(tournamentId);
+export async function getActiveParticipants(tournamentId) {
+  return queryAll(
+    "SELECT * FROM participants WHERE tournament_id = $1 AND role = 'participant' AND status = 'active' ORDER BY points DESC, wins DESC, username ASC",
+    [tournamentId]
+  );
 }
 
-/**
- * Count of active participants.
- */
-export function getActiveParticipantCount(tournamentId) {
-    const db = getDatabase();
-    const row = db
-        .prepare(
-            `
-    SELECT COUNT(*) as count FROM participants
-    WHERE tournament_id = ?
-      AND role   = 'participant'
-      AND status = 'active'
-  `,
-        )
-        .get(tournamentId);
-    return row?.count ?? 0;
+export async function getActiveParticipantCount(tournamentId) {
+  const row = await queryOne(
+    "SELECT COUNT(*) as count FROM participants WHERE tournament_id = $1 AND role = 'participant' AND status = 'active'",
+    [tournamentId]
+  );
+  return parseInt(row?.count ?? 0);
 }
 
-/**
- * Count of all registered participants (including spectators).
- */
-export function getParticipantCount(tournamentId) {
-    const db = getDatabase();
-    const row = db
-        .prepare(
-            `
-    SELECT COUNT(*) as count FROM participants
-    WHERE tournament_id = ? AND role = 'participant'
-  `,
-        )
-        .get(tournamentId);
-    return row?.count ?? 0;
+export async function getParticipantCount(tournamentId) {
+  const row = await queryOne(
+    "SELECT COUNT(*) as count FROM participants WHERE tournament_id = $1 AND role = 'participant'",
+    [tournamentId]
+  );
+  return parseInt(row?.count ?? 0);
 }
 
-/**
- * Get spectators only.
- */
-export function getSpectators(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM participants
-    WHERE tournament_id = ? AND role = 'spectator'
-    ORDER BY username ASC
-  `,
-        )
-        .all(tournamentId);
+export async function getSpectators(tournamentId) {
+  return queryAll(
+    "SELECT * FROM participants WHERE tournament_id = $1 AND role = 'spectator' ORDER BY username ASC",
+    [tournamentId]
+  );
 }
 
-/**
- * Switch a user between participant / spectator.
- */
-export function updateParticipantRole(tournamentId, userId, role) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "UPDATE participants SET role = ? WHERE tournament_id = ? AND user_id = ?",
-        )
-        .run(role, tournamentId, userId);
+export async function updateParticipantRole(tournamentId, userId, role) {
+  return execute(
+    'UPDATE participants SET role = $1 WHERE tournament_id = $2 AND user_id = $3',
+    [role, tournamentId, userId]
+  );
 }
 
-/**
- * Mark a participant as disqualified (or re-activate).
- */
-export function updateParticipantStatus(tournamentId, userId, status) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "UPDATE participants SET status = ? WHERE tournament_id = ? AND user_id = ?",
-        )
-        .run(status, tournamentId, userId);
+export async function updateParticipantStatus(tournamentId, userId, status) {
+  return execute(
+    'UPDATE participants SET status = $1 WHERE tournament_id = $2 AND user_id = $3',
+    [status, tournamentId, userId]
+  );
 }
 
-/**
- * Increment / set stats after a match result.
- * @param {string} tournamentId
- * @param {string} userId
- * @param {object} stats  { points, wins, losses, draws, matchesPlayed }
- */
-export function updateParticipantStats(
-    tournamentId,
-    userId,
-    { points, wins, losses, draws, matchesPlayed },
-) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    UPDATE participants SET
-      points         = ?,
-      wins           = ?,
-      losses         = ?,
-      draws          = ?,
-      matches_played = ?
-    WHERE tournament_id = ? AND user_id = ?
-  `,
-        )
-        .run(points, wins, losses, draws, matchesPlayed, tournamentId, userId);
+export async function updateParticipantStats(tournamentId, userId, { points, wins, losses, draws, matchesPlayed }) {
+  return execute(
+    'UPDATE participants SET points=$1, wins=$2, losses=$3, draws=$4, matches_played=$5 WHERE tournament_id=$6 AND user_id=$7',
+    [points, wins, losses, draws, matchesPlayed, tournamentId, userId]
+  );
 }
 
-/**
- * Increment stats by delta (handy after a single match).
- */
-export function incrementParticipantStats(
-    tournamentId,
-    userId,
-    { pointsDelta = 0, winsDelta = 0, lossesDelta = 0, drawsDelta = 0 },
-) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    UPDATE participants SET
-      points         = points         + ?,
-      wins           = wins           + ?,
-      losses         = losses         + ?,
-      draws          = draws          + ?,
-      matches_played = matches_played + 1
-    WHERE tournament_id = ? AND user_id = ?
-  `,
-        )
-        .run(pointsDelta, winsDelta, lossesDelta, drawsDelta, tournamentId, userId);
+export async function incrementParticipantStats(tournamentId, userId, { pointsDelta = 0, winsDelta = 0, lossesDelta = 0, drawsDelta = 0 }) {
+  return execute(
+    'UPDATE participants SET points=points+$1, wins=wins+$2, losses=losses+$3, draws=draws+$4, matches_played=matches_played+1 WHERE tournament_id=$5 AND user_id=$6',
+    [pointsDelta, winsDelta, lossesDelta, drawsDelta, tournamentId, userId]
+  );
 }
 
-/**
- * Delete all participants for a tournament (used on tournament delete).
- */
-export function deleteParticipantsByTournament(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare("DELETE FROM participants WHERE tournament_id = ?")
-        .run(tournamentId);
+export async function getLeaderboard(tournamentId) {
+  return queryAll(
+    "SELECT * FROM participants WHERE tournament_id = $1 AND role = 'participant' ORDER BY points DESC, wins DESC, losses ASC, username ASC",
+    [tournamentId]
+  );
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  MATCH QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * Insert a single match row.
- */
-export function createMatch({
-    tournamentId,
-    round,
-    matchNumber,
-    player1Id,
-    player2Id,
-}) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    INSERT INTO matches (tournament_id, round, match_number, player1_id, player2_id)
-    VALUES (?, ?, ?, ?, ?)
-  `,
-        )
-        .run(tournamentId, round, matchNumber, player1Id, player2Id);
+export async function createMatch({ tournamentId, round, matchNumber, player1Id, player2Id }) {
+  return execute(
+    'INSERT INTO matches (tournament_id, round, match_number, player1_id, player2_id) VALUES ($1, $2, $3, $4, $5)',
+    [tournamentId, round, matchNumber, player1Id, player2Id]
+  );
 }
 
-/**
- * Bulk-insert matches for a round (uses a transaction for atomicity).
- * @param {object[]} matches  Array of { tournamentId, round, matchNumber, player1Id, player2Id }
- */
-export function createMatchesBulk(matches) {
-    const db = getDatabase();
-    const stmt = db.prepare(`
-    INSERT INTO matches (tournament_id, round, match_number, player1_id, player2_id)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-    const insertMany = db.transaction((items) => {
-        for (const m of items) {
-            stmt.run(m.tournamentId, m.round, m.matchNumber, m.player1Id, m.player2Id);
-        }
-    });
-
-    insertMany(matches);
-}
-/**
- * Get a match by its auto-increment ID.
- */
-export function getMatchById(id) {
-    const db = getDatabase();
-    return db.prepare("SELECT * FROM matches WHERE id = ?").get(id);
+export async function createMatchesBulk(matches) {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    for (const m of matches) {
+      await client.query(
+        'INSERT INTO matches (tournament_id, round, match_number, player1_id, player2_id) VALUES ($1, $2, $3, $4, $5)',
+        [m.tournamentId, m.round, m.matchNumber, m.player1Id, m.player2Id]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
-/**
- * All matches for a tournament.
- */
-export function getMatchesByTournament(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "SELECT * FROM matches WHERE tournament_id = ? ORDER BY round, match_number",
-        )
-        .all(tournamentId);
+export async function getMatchById(id) {
+  return queryOne('SELECT * FROM matches WHERE id = $1', [id]);
 }
 
-/**
- * Matches in a specific round.
- */
-export function getMatchesByRound(tournamentId, round) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "SELECT * FROM matches WHERE tournament_id = ? AND round = ? ORDER BY match_number",
-        )
-        .all(tournamentId, round);
+export async function getMatchesByTournament(tournamentId) {
+  return queryAll(
+    'SELECT * FROM matches WHERE tournament_id = $1 ORDER BY round, match_number',
+    [tournamentId]
+  );
 }
 
-/**
- * All matches involving a player (any status).
- */
-export function getMatchesByPlayer(tournamentId, userId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM matches
-    WHERE tournament_id = ?
-      AND (player1_id = ? OR player2_id = ?)
-    ORDER BY round, match_number
-  `,
-        )
-        .all(tournamentId, userId, userId);
+export async function getMatchesByRound(tournamentId, round) {
+  return queryAll(
+    'SELECT * FROM matches WHERE tournament_id = $1 AND round = $2 ORDER BY match_number',
+    [tournamentId, round]
+  );
 }
 
-/**
- * The player's currently active match (status = 'in_progress').
- */
-export function getActiveMatchByPlayer(tournamentId, userId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM matches
-    WHERE tournament_id = ?
-      AND (player1_id = ? OR player2_id = ?)
-      AND status = 'in_progress'
-    LIMIT 1
-  `,
-        )
-        .get(tournamentId, userId, userId);
+export async function getMatchesByPlayer(tournamentId, userId) {
+  return queryAll(
+    'SELECT * FROM matches WHERE tournament_id = $1 AND (player1_id = $2 OR player2_id = $2) ORDER BY round, match_number',
+    [tournamentId, userId]
+  );
 }
 
-/**
- * All pending matches for a player.
- */
-export function getPendingMatchesByPlayer(tournamentId, userId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM matches
-    WHERE tournament_id = ?
-      AND (player1_id = ? OR player2_id = ?)
-      AND status = 'pending'
-    ORDER BY round, match_number
-  `,
-        )
-        .all(tournamentId, userId, userId);
+export async function getActiveMatchByPlayer(tournamentId, userId) {
+  return queryOne(
+    "SELECT * FROM matches WHERE tournament_id = $1 AND (player1_id = $2 OR player2_id = $2) AND status = 'in_progress' LIMIT 1",
+    [tournamentId, userId]
+  );
 }
 
-/**
- * Get the next pending match where BOTH players are free
- * (neither has an in_progress match).
- */
-export function getNextAvailableMatch(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
+export async function getPendingMatchesByPlayer(tournamentId, userId) {
+  return queryAll(
+    "SELECT * FROM matches WHERE tournament_id = $1 AND (player1_id = $2 OR player2_id = $2) AND status = 'pending' ORDER BY round, match_number",
+    [tournamentId, userId]
+  );
+}
+
+export async function getAllAvailableMatches(tournamentId) {
+  return queryAll(`
     SELECT m.* FROM matches m
-    WHERE m.tournament_id = ?
-      AND m.status = 'pending'
+    WHERE m.tournament_id = $1 AND m.status = 'pending'
       AND NOT EXISTS (
         SELECT 1 FROM matches m2
-        WHERE m2.tournament_id = m.tournament_id
-          AND m2.status = 'in_progress'
+        WHERE m2.tournament_id = m.tournament_id AND m2.status = 'in_progress'
           AND (m2.player1_id = m.player1_id OR m2.player2_id = m.player1_id
             OR m2.player1_id = m.player2_id OR m2.player2_id = m.player2_id)
       )
     ORDER BY m.round, m.match_number
-    LIMIT 1
-  `,
-        )
-        .get(tournamentId);
+  `, [tournamentId]);
 }
 
-/**
- * Get ALL pending matches where both players are currently free.
- */
-export function getAllAvailableMatches(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
+export async function getAvailableMatchesForRound(tournamentId, round) {
+  return queryAll(`
     SELECT m.* FROM matches m
-    WHERE m.tournament_id = ?
-      AND m.status = 'pending'
+    WHERE m.tournament_id = $1 AND m.round = $2 AND m.status = 'pending'
       AND NOT EXISTS (
         SELECT 1 FROM matches m2
-        WHERE m2.tournament_id = m.tournament_id
-          AND m2.status = 'in_progress'
-          AND (m2.player1_id = m.player1_id OR m2.player2_id = m.player1_id
-            OR m2.player1_id = m.player2_id OR m2.player2_id = m.player2_id)
-      )
-    ORDER BY m.round, m.match_number
-  `,
-        )
-        .all(tournamentId);
-}
-
-/**
- * Update the running score for a match (used during best-of-N).
- */
-export function updateMatchScore(id, player1Score, player2Score) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "UPDATE matches SET player1_score = ?, player2_score = ? WHERE id = ?",
-        )
-        .run(player1Score, player2Score, id);
-}
-
-/**
- * Record the final result of a match.
- */
-export function updateMatchResult(
-    id,
-    { winnerId, loserId, player1Score, player2Score },
-) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    UPDATE matches SET
-      winner_id     = ?,
-      loser_id      = ?,
-      player1_score = ?,
-      player2_score = ?,
-      status        = 'completed',
-      completed_at  = datetime('now')
-    WHERE id = ?
-  `,
-        )
-        .run(winnerId, loserId, player1Score, player2Score, id);
-}
-
-/**
- * Change match status.
- */
-export function updateMatchStatus(id, status) {
-    const db = getDatabase();
-    return db
-        .prepare("UPDATE matches SET status = ? WHERE id = ?")
-        .run(status, id);
-}
-
-/**
- * Store Discord thread / message IDs on a match.
- */
-export function updateMatchThread(id, threadId, scoreMessageId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            "UPDATE matches SET thread_id = ?, score_message_id = ? WHERE id = ?",
-        )
-        .run(threadId, scoreMessageId, id);
-}
-
-/**
- * Check if every match in a round is completed.
- */
-export function isRoundComplete(tournamentId, round) {
-    const db = getDatabase();
-    const row = db
-        .prepare(
-            `
-    SELECT COUNT(*) as remaining FROM matches
-    WHERE tournament_id = ?
-      AND round = ?
-      AND status NOT IN ('completed', 'cancelled')
-  `,
-        )
-        .get(tournamentId, round);
-    return (row?.remaining ?? 0) === 0;
-}
-
-/**
- * Check if ALL matches in the tournament are done.
- */
-export function isTournamentComplete(tournamentId) {
-    const db = getDatabase();
-    const row = db
-        .prepare(
-            `
-    SELECT COUNT(*) as remaining FROM matches
-    WHERE tournament_id = ?
-      AND status NOT IN ('completed', 'cancelled')
-  `,
-        )
-        .get(tournamentId);
-    return (row?.remaining ?? 0) === 0;
-}
-
-/**
- * Count completed matches.
- */
-export function getCompletedMatchCount(tournamentId) {
-    const db = getDatabase();
-    const row = db
-        .prepare(
-            `
-    SELECT COUNT(*) as count FROM matches
-    WHERE tournament_id = ? AND status = 'completed'
-  `,
-        )
-        .get(tournamentId);
-    return row?.count ?? 0;
-}
-
-/**
- * Total match count.
- */
-export function getTotalMatchCount(tournamentId) {
-    const db = getDatabase();
-    const row = db
-        .prepare(
-            `
-    SELECT COUNT(*) as count FROM matches WHERE tournament_id = ?
-  `,
-        )
-        .get(tournamentId);
-    return row?.count ?? 0;
-}
-
-/**
- * Get a match by its thread ID (handy for button interactions inside threads).
- */
-export function getMatchByThreadId(threadId) {
-    const db = getDatabase();
-    return db.prepare("SELECT * FROM matches WHERE thread_id = ?").get(threadId);
-}
-
-/**
- * Cancel all pending/in-progress matches involving a player
- * (used on disqualification).
- */
-export function cancelMatchesByPlayer(tournamentId, userId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    UPDATE matches SET status = 'cancelled'
-    WHERE tournament_id = ?
-      AND (player1_id = ? OR player2_id = ?)
-      AND status IN ('pending', 'in_progress')
-  `,
-        )
-        .run(tournamentId, userId, userId);
-}
-
-/**
- * Delete all matches for a tournament (used on tournament delete).
- */
-export function deleteMatchesByTournament(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare("DELETE FROM matches WHERE tournament_id = ?")
-        .run(tournamentId);
-}
-
-/**
- * Get leaderboard (participants sorted by points, then wins, then losses asc).
- */
-export function getLeaderboard(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM participants
-    WHERE tournament_id = ?
-      AND role = 'participant'
-    ORDER BY points DESC, wins DESC, losses ASC, username ASC
-  `,
-        )
-        .all(tournamentId);
-}
-
-/**
- * Find a match between two specific players in a tournament.
- */
-export function getMatchBetweenPlayers(tournamentId, userId1, userId2) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    SELECT * FROM matches
-    WHERE tournament_id = ?
-      AND (
-        (player1_id = ? AND player2_id = ?)
-        OR (player1_id = ? AND player2_id = ?)
-      )
-    LIMIT 1
-  `,
-        )
-        .get(tournamentId, userId1, userId2, userId2, userId1);
-}
-
-/**
- * Get the current round number from tournament.
- * @param {string} tournamentId
- * @returns {number}
- */
-
-export function getCurrentRound(tournamentId) {
-    const db = getDatabase();
-    const row = db
-        .prepare("SELECT current_round FROM tournaments WHERE id = ?")
-        .get(tournamentId);
-    return row?.current_round ?? 0;
-}
-
-/**
- * Cancel ALL pending/in-progress matches for a tournament.
- * Used when ending a tournament early.
- */
-export function cancelAllPendingMatches(tournamentId) {
-    const db = getDatabase();
-    return db
-        .prepare(
-            `
-    UPDATE matches SET
-      status       = 'cancelled',
-      completed_at = datetime('now')
-    WHERE tournament_id = ?
-      AND status IN ('pending', 'in_progress')
-  `,
-        )
-        .run(tournamentId);
-}
-
-/**
- * Get pending matches for a SPECIFIC round where both players are free.
- * @param {string} tournamentId
- * @param {number} round
- * @returns {object[]}
- */
-export function getAvailableMatchesForRound(tournamentId, round) {
-    const db = getDatabase();
-    return db.prepare(`
-    SELECT m.* FROM matches m
-    WHERE m.tournament_id = ?
-      AND m.round = ?
-      AND m.status = 'pending'
-      AND NOT EXISTS (
-        SELECT 1 FROM matches m2
-        WHERE m2.tournament_id = m.tournament_id
-          AND m2.status = 'in_progress'
+        WHERE m2.tournament_id = m.tournament_id AND m2.status = 'in_progress'
           AND (m2.player1_id = m.player1_id OR m2.player2_id = m.player1_id
             OR m2.player1_id = m.player2_id OR m2.player2_id = m.player2_id)
       )
     ORDER BY m.match_number
-  `).all(tournamentId, round);
+  `, [tournamentId, round]);
 }
 
-/**
- * Count pending + in_progress matches in a specific round.
- * @param {string} tournamentId
- * @param {number} round
- * @returns {number}
- */
-export function getRemainingMatchCountForRound(tournamentId, round) {
-    const db = getDatabase();
-    const row = db.prepare(`
-    SELECT COUNT(*) as count FROM matches
-    WHERE tournament_id = ?
-      AND round = ?
-      AND status IN ('pending', 'in_progress')
-  `).get(tournamentId, round);
-    return row?.count ?? 0;
+export async function getRemainingMatchCountForRound(tournamentId, round) {
+  const row = await queryOne(
+    "SELECT COUNT(*) as count FROM matches WHERE tournament_id = $1 AND round = $2 AND status IN ('pending', 'in_progress')",
+    [tournamentId, round]
+  );
+  return parseInt(row?.count ?? 0);
+}
+
+export async function updateMatchScore(id, player1Score, player2Score) {
+  return execute(
+    'UPDATE matches SET player1_score = $1, player2_score = $2 WHERE id = $3',
+    [player1Score, player2Score, id]
+  );
+}
+
+export async function updateMatchResult(id, { winnerId, loserId, player1Score, player2Score }) {
+  return execute(
+    "UPDATE matches SET winner_id=$1, loser_id=$2, player1_score=$3, player2_score=$4, status='completed', completed_at=NOW() WHERE id=$5",
+    [winnerId, loserId, player1Score, player2Score, id]
+  );
+}
+
+export async function updateMatchStatus(id, status) {
+  return execute('UPDATE matches SET status = $1 WHERE id = $2', [status, id]);
+}
+
+export async function updateMatchThread(id, threadId, scoreMessageId) {
+  return execute(
+    'UPDATE matches SET thread_id = $1, score_message_id = $2 WHERE id = $3',
+    [threadId, scoreMessageId, id]
+  );
+}
+
+export async function isRoundComplete(tournamentId, round) {
+  const row = await queryOne(
+    "SELECT COUNT(*) as remaining FROM matches WHERE tournament_id = $1 AND round = $2 AND status NOT IN ('completed', 'cancelled')",
+    [tournamentId, round]
+  );
+  return parseInt(row?.remaining ?? 0) === 0;
+}
+
+export async function isTournamentComplete(tournamentId) {
+  const row = await queryOne(
+    "SELECT COUNT(*) as remaining FROM matches WHERE tournament_id = $1 AND status NOT IN ('completed', 'cancelled')",
+    [tournamentId]
+  );
+  return parseInt(row?.remaining ?? 0) === 0;
+}
+
+export async function getCompletedMatchCount(tournamentId) {
+  const row = await queryOne(
+    "SELECT COUNT(*) as count FROM matches WHERE tournament_id = $1 AND status = 'completed'",
+    [tournamentId]
+  );
+  return parseInt(row?.count ?? 0);
+}
+
+export async function getTotalMatchCount(tournamentId) {
+  const row = await queryOne(
+    'SELECT COUNT(*) as count FROM matches WHERE tournament_id = $1',
+    [tournamentId]
+  );
+  return parseInt(row?.count ?? 0);
+}
+
+export async function getMatchByThreadId(threadId) {
+  return queryOne('SELECT * FROM matches WHERE thread_id = $1', [threadId]);
+}
+
+export async function cancelMatchesByPlayer(tournamentId, userId) {
+  return execute(
+    "UPDATE matches SET status = 'cancelled' WHERE tournament_id = $1 AND (player1_id = $2 OR player2_id = $2) AND status IN ('pending', 'in_progress')",
+    [tournamentId, userId]
+  );
+}
+
+export async function cancelAllPendingMatches(tournamentId) {
+  return execute(
+    "UPDATE matches SET status = 'cancelled', completed_at = NOW() WHERE tournament_id = $1 AND status IN ('pending', 'in_progress')",
+    [tournamentId]
+  );
+}
+
+export async function getCurrentRound(tournamentId) {
+  const row = await queryOne('SELECT current_round FROM tournaments WHERE id = $1', [tournamentId]);
+  return row?.current_round ?? 0;
+}
+
+export async function getMatchBetweenPlayers(tournamentId, userId1, userId2) {
+  return queryOne(
+    'SELECT * FROM matches WHERE tournament_id = $1 AND ((player1_id = $2 AND player2_id = $3) OR (player1_id = $3 AND player2_id = $2)) LIMIT 1',
+    [tournamentId, userId1, userId2]
+  );
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  AUTOROLE QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-/**
- * Add a role to the autorole list for a guild.
- */
-export function addAutorole(guildId, roleId) {
-  const db = getDatabase();
-  return db.prepare(
-    'INSERT OR IGNORE INTO autoroles (guild_id, role_id) VALUES (?, ?)'
-  ).run(guildId, roleId);
+export async function addAutorole(guildId, roleId) {
+  return execute(
+    'INSERT INTO autoroles (guild_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [guildId, roleId]
+  );
 }
 
-/**
- * Remove a role from the autorole list.
- */
-export function removeAutorole(guildId, roleId) {
-  const db = getDatabase();
-  return db.prepare(
-    'DELETE FROM autoroles WHERE guild_id = ? AND role_id = ?'
-  ).run(guildId, roleId);
+export async function removeAutorole(guildId, roleId) {
+  return execute('DELETE FROM autoroles WHERE guild_id = $1 AND role_id = $2', [guildId, roleId]);
 }
 
-/**
- * Get all autoroles for a guild.
- */
-export function getAutoroles(guildId) {
-  const db = getDatabase();
-  return db.prepare(
-    'SELECT * FROM autoroles WHERE guild_id = ?'
-  ).all(guildId);
+export async function getAutoroles(guildId) {
+  return queryAll('SELECT * FROM autoroles WHERE guild_id = $1', [guildId]);
 }
 
-/**
- * Clear all autoroles for a guild.
- */
-export function clearAutoroles(guildId) {
-  const db = getDatabase();
-  return db.prepare(
-    'DELETE FROM autoroles WHERE guild_id = ?'
-  ).run(guildId);
+export async function clearAutoroles(guildId) {
+  return execute('DELETE FROM autoroles WHERE guild_id = $1', [guildId]);
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  GIVEAWAY CONFIG QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-export function getGiveawayConfig(guildId) {
-  const db = getDatabase();
-  return db.prepare('SELECT * FROM giveaway_config WHERE guild_id = ?').get(guildId);
+export async function getGiveawayConfig(guildId) {
+  return queryOne('SELECT * FROM giveaway_config WHERE guild_id = $1', [guildId]);
 }
 
-export function setGiveawayConfig(guildId, staffRoleId, pingRoleId = null) {
-  const db = getDatabase();
-  return db.prepare(`
-    INSERT INTO giveaway_config (guild_id, staff_role_id, ping_role_id)
-    VALUES (?, ?, ?)
-    ON CONFLICT(guild_id) DO UPDATE SET staff_role_id = ?, ping_role_id = ?
-  `).run(guildId, staffRoleId, pingRoleId, staffRoleId, pingRoleId);
+export async function setGiveawayConfig(guildId, staffRoleId, pingRoleId = null) {
+  return execute(
+    'INSERT INTO giveaway_config (guild_id, staff_role_id, ping_role_id) VALUES ($1, $2, $3) ON CONFLICT(guild_id) DO UPDATE SET staff_role_id = $2, ping_role_id = $3',
+    [guildId, staffRoleId, pingRoleId]
+  );
 }
 
-export function updateGiveawayPingRole(guildId, pingRoleId) {
-  const db = getDatabase();
-  return db.prepare(
-    'UPDATE giveaway_config SET ping_role_id = ? WHERE guild_id = ?'
-  ).run(pingRoleId, guildId);
-}
-
-export function deleteGiveawayConfig(guildId) {
-  const db = getDatabase();
-  return db.prepare('DELETE FROM giveaway_config WHERE guild_id = ?').run(guildId);
+export async function updateGiveawayPingRole(guildId, pingRoleId) {
+  return execute('UPDATE giveaway_config SET ping_role_id = $1 WHERE guild_id = $2', [pingRoleId, guildId]);
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  GIVEAWAY CHANNEL QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-export function addGiveawayChannel(guildId, channelId) {
-  const db = getDatabase();
-  return db.prepare(
-    'INSERT OR IGNORE INTO giveaway_channels (guild_id, channel_id) VALUES (?, ?)'
-  ).run(guildId, channelId);
+export async function addGiveawayChannel(guildId, channelId) {
+  return execute(
+    'INSERT INTO giveaway_channels (guild_id, channel_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [guildId, channelId]
+  );
 }
 
-export function removeGiveawayChannel(guildId, channelId) {
-  const db = getDatabase();
-  return db.prepare(
-    'DELETE FROM giveaway_channels WHERE guild_id = ? AND channel_id = ?'
-  ).run(guildId, channelId);
+export async function removeGiveawayChannel(guildId, channelId) {
+  return execute('DELETE FROM giveaway_channels WHERE guild_id = $1 AND channel_id = $2', [guildId, channelId]);
 }
 
-export function getGiveawayChannels(guildId) {
-  const db = getDatabase();
-  return db.prepare(
-    'SELECT * FROM giveaway_channels WHERE guild_id = ?'
-  ).all(guildId);
-}
-
-export function clearGiveawayChannels(guildId) {
-  const db = getDatabase();
-  return db.prepare('DELETE FROM giveaway_channels WHERE guild_id = ?').run(guildId);
+export async function getGiveawayChannels(guildId) {
+  return queryAll('SELECT * FROM giveaway_channels WHERE guild_id = $1', [guildId]);
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  GIVEAWAY QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-export function createGiveaway({ guildId, creatorId, prize, description, winnerCount, durationMinutes }) {
-  const db = getDatabase();
-  return db.prepare(`
-    INSERT INTO giveaways (guild_id, creator_id, prize, description, winner_count, duration_minutes)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(guildId, creatorId, prize, description, winnerCount, durationMinutes);
+export async function createGiveaway({ guildId, creatorId, prize, description, winnerCount, durationMinutes }) {
+  const { rows } = await getPool().query(
+    'INSERT INTO giveaways (guild_id, creator_id, prize, description, winner_count, duration_minutes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+    [guildId, creatorId, prize, description, winnerCount, durationMinutes]
+  );
+  return { lastInsertRowid: rows[0].id };
 }
 
-export function getGiveawayById(id) {
-  const db = getDatabase();
-  return db.prepare('SELECT * FROM giveaways WHERE id = ?').get(id);
+export async function getGiveawayById(id) {
+  return queryOne('SELECT * FROM giveaways WHERE id = $1', [id]);
 }
 
-export function getActiveGiveaways(guildId) {
-  const db = getDatabase();
-  return db.prepare(
-    "SELECT * FROM giveaways WHERE guild_id = ? AND status = 'approved' ORDER BY ends_at ASC"
-  ).all(guildId);
+export async function getActiveGiveaways(guildId) {
+  return queryAll(
+    "SELECT * FROM giveaways WHERE guild_id = $1 AND status = 'approved' ORDER BY ends_at ASC",
+    [guildId]
+  );
 }
 
-export function getPendingGiveaways(guildId) {
-  const db = getDatabase();
-  return db.prepare(
-    "SELECT * FROM giveaways WHERE guild_id = ? AND status = 'pending' ORDER BY created_at ASC"
-  ).all(guildId);
+export async function getPendingGiveaways(guildId) {
+  return queryAll(
+    "SELECT * FROM giveaways WHERE guild_id = $1 AND status = 'pending' ORDER BY created_at ASC",
+    [guildId]
+  );
 }
 
-export function getExpiredGiveaways() {
-  const db = getDatabase();
-  return db.prepare(`
-    SELECT * FROM giveaways
-    WHERE status = 'approved'
-      AND ends_at IS NOT NULL
-      AND datetime(ends_at) <= datetime('now')
-  `).all();
+export async function getExpiredGiveaways() {
+  return queryAll(
+    "SELECT * FROM giveaways WHERE status = 'approved' AND ends_at IS NOT NULL AND ends_at <= NOW()"
+  );
 }
 
-export function updateGiveawayStatus(id, status) {
-  const db = getDatabase();
-  return db.prepare('UPDATE giveaways SET status = ? WHERE id = ?').run(status, id);
+export async function updateGiveawayStatus(id, status) {
+  return execute('UPDATE giveaways SET status = $1 WHERE id = $2', [status, id]);
 }
 
-export function updateGiveawayApproval(id, { channelId, messageId, endsAt }) {
-  const db = getDatabase();
-  return db.prepare(`
-    UPDATE giveaways SET
-      status     = 'approved',
-      channel_id = ?,
-      message_id = ?,
-      ends_at    = ?
-    WHERE id = ?
-  `).run(channelId, messageId, endsAt, id);
+export async function updateGiveawayApproval(id, { channelId, messageId, endsAt }) {
+  return execute(
+    "UPDATE giveaways SET status = 'approved', channel_id = $1, message_id = $2, ends_at = $3 WHERE id = $4",
+    [channelId, messageId, endsAt, id]
+  );
 }
 
-export function updateGiveawayEnd(id) {
-  const db = getDatabase();
-  return db.prepare(`
-    UPDATE giveaways SET
-      status   = 'ended',
-      ended_at = datetime('now')
-    WHERE id = ?
-  `).run(id);
+export async function updateGiveawayEnd(id) {
+  return execute("UPDATE giveaways SET status = 'ended', ended_at = NOW() WHERE id = $1", [id]);
 }
 
-export function updateGiveawayReviewMessage(id, reviewMessageId, reviewChannelId) {
-  const db = getDatabase();
-  return db.prepare(
-    'UPDATE giveaways SET review_message_id = ?, review_channel_id = ? WHERE id = ?'
-  ).run(reviewMessageId, reviewChannelId, id);
+export async function updateGiveawayReviewMessage(id, reviewMessageId, reviewChannelId) {
+  return execute(
+    'UPDATE giveaways SET review_message_id = $1, review_channel_id = $2 WHERE id = $3',
+    [reviewMessageId, reviewChannelId, id]
+  );
 }
 
-export function updateGiveawayMessage(id, messageId) {
-  const db = getDatabase();
-  return db.prepare('UPDATE giveaways SET message_id = ? WHERE id = ?').run(messageId, id);
+export async function updateGiveawayMessage(id, messageId) {
+  return execute('UPDATE giveaways SET message_id = $1 WHERE id = $2', [messageId, id]);
 }
 
 // ═════════════════════════════════════════════════════════════════
 //  GIVEAWAY ENTRY QUERIES
 // ═════════════════════════════════════════════════════════════════
 
-export function addGiveawayEntry(giveawayId, userId) {
-  const db = getDatabase();
-  return db.prepare(
-    'INSERT OR IGNORE INTO giveaway_entries (giveaway_id, user_id) VALUES (?, ?)'
-  ).run(giveawayId, userId);
+export async function addGiveawayEntry(giveawayId, userId) {
+  return execute(
+    'INSERT INTO giveaway_entries (giveaway_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [giveawayId, userId]
+  );
 }
 
-export function removeGiveawayEntry(giveawayId, userId) {
-  const db = getDatabase();
-  return db.prepare(
-    'DELETE FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?'
-  ).run(giveawayId, userId);
+export async function removeGiveawayEntry(giveawayId, userId) {
+  return execute(
+    'DELETE FROM giveaway_entries WHERE giveaway_id = $1 AND user_id = $2',
+    [giveawayId, userId]
+  );
 }
 
-export function getGiveawayEntries(giveawayId) {
-  const db = getDatabase();
-  return db.prepare(
-    'SELECT * FROM giveaway_entries WHERE giveaway_id = ? ORDER BY entered_at ASC'
-  ).all(giveawayId);
+export async function getGiveawayEntries(giveawayId) {
+  return queryAll(
+    'SELECT * FROM giveaway_entries WHERE giveaway_id = $1 ORDER BY entered_at ASC',
+    [giveawayId]
+  );
 }
 
-export function getGiveawayEntryCount(giveawayId) {
-  const db = getDatabase();
-  const row = db.prepare(
-    'SELECT COUNT(*) as count FROM giveaway_entries WHERE giveaway_id = ?'
-  ).get(giveawayId);
-  return row?.count ?? 0;
+export async function getGiveawayEntryCount(giveawayId) {
+  const row = await queryOne(
+    'SELECT COUNT(*) as count FROM giveaway_entries WHERE giveaway_id = $1',
+    [giveawayId]
+  );
+  return parseInt(row?.count ?? 0);
 }
 
-export function hasEnteredGiveaway(giveawayId, userId) {
-  const db = getDatabase();
-  const row = db.prepare(
-    'SELECT 1 FROM giveaway_entries WHERE giveaway_id = ? AND user_id = ?'
-  ).get(giveawayId, userId);
+export async function hasEnteredGiveaway(giveawayId, userId) {
+  const row = await queryOne(
+    'SELECT 1 FROM giveaway_entries WHERE giveaway_id = $1 AND user_id = $2',
+    [giveawayId, userId]
+  );
   return !!row;
 }
 
-export function deleteGiveawayEntries(giveawayId) {
-  const db = getDatabase();
-  return db.prepare('DELETE FROM giveaway_entries WHERE giveaway_id = ?').run(giveawayId);
+export async function deleteGiveawayEntries(giveawayId) {
+  return execute('DELETE FROM giveaway_entries WHERE giveaway_id = $1', [giveawayId]);
 }

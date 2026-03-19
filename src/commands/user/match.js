@@ -1,218 +1,57 @@
-// ─── src/commands/user/match.js ──────────────────────────────────
-// /match <tournament>  — Shows the user's current match details.
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
+import { getTournamentById, getParticipant, getActiveMatchByPlayer, getPendingMatchesByPlayer, getMatchesByPlayer } from '../../database/queries.js';
+import { COLORS } from '../../config.js';
 
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from "discord.js";
-import {
-  getTournamentById,
-  getParticipant,
-  getActiveMatchByPlayer,
-  getPendingMatchesByPlayer,
-  getMatchesByPlayer,
-} from "../../database/queries.js";
-import { COLORS } from "../../config.js";
+export const data = new SlashCommandBuilder().setName('match').setDescription('Show your current match')
+  .addStringOption(o => o.setName('tournament').setDescription('Select tournament').setRequired(true).setAutocomplete(true));
 
-export const data = new SlashCommandBuilder()
-  .setName("match")
-  .setDescription("Show your current match details")
-  .addStringOption((opt) =>
-    opt
-      .setName("tournament")
-      .setDescription("Select a tournament")
-      .setRequired(true)
-      .setAutocomplete(true),
-  );
-
-/**
- * @param {import('discord.js').ChatInputCommandInteraction} interaction
- */
 export async function execute(interaction) {
-  if (!interaction.guild) {
-    return interaction.reply({
-      content: "❌ This command can only be used inside a server.",
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+  if (!interaction.guild) return interaction.reply({ content: '❌ Server only.', flags: MessageFlags.Ephemeral });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const tournamentId = interaction.options.getString("tournament", true);
-  const tournament = getTournamentById(tournamentId);
+  const tournament = await getTournamentById(interaction.options.getString('tournament', true));
+  if (!tournament || tournament.guild_id !== interaction.guildId) return interaction.editReply({ content: '❌ Not found.' });
 
-  if (!tournament || tournament.guild_id !== interaction.guildId) {
-    return interaction.reply({
-      content: "❌ Tournament not found.",
-      flags: MessageFlags.Ephemeral,
-    });
-  }
+  const participant = await getParticipant(tournament.id, interaction.user.id);
+  if (!participant || participant.role !== 'participant') return interaction.editReply({ content: '❌ Not a participant.' });
 
-  // Check if user is a participant
-  const participant = getParticipant(tournamentId, interaction.user.id);
-  if (!participant || participant.role !== "participant") {
-    return interaction.reply({
-      content: "❌ You are not a participant in this tournament.",
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
-  // Find active match
-  const activeMatch = getActiveMatchByPlayer(tournamentId, interaction.user.id);
-
+  const activeMatch = await getActiveMatchByPlayer(tournament.id, interaction.user.id);
   if (activeMatch) {
-    const opponentId =
-      activeMatch.player1_id === interaction.user.id
-        ? activeMatch.player2_id
-        : activeMatch.player1_id;
-
-    const opponentData = getParticipant(tournamentId, opponentId);
-    const opponentName =
-      opponentData?.display_name || opponentData?.username || "Unknown";
-
-    const isPlayer1 = activeMatch.player1_id === interaction.user.id;
-    const myScore = isPlayer1
-      ? activeMatch.player1_score
-      : activeMatch.player2_score;
-    const opponentScore = isPlayer1
-      ? activeMatch.player2_score
-      : activeMatch.player1_score;
+    const oppId = activeMatch.player1_id === interaction.user.id ? activeMatch.player2_id : activeMatch.player1_id;
+    const oppData = await getParticipant(tournament.id, oppId);
+    const oppName = oppData?.display_name || oppData?.username || 'Unknown';
+    const isP1 = activeMatch.player1_id === interaction.user.id;
+    const myScore = isP1 ? activeMatch.player1_score : activeMatch.player2_score;
+    const opScore = isP1 ? activeMatch.player2_score : activeMatch.player1_score;
     const winsNeeded = Math.ceil(tournament.best_of / 2);
 
-    const embed = new EmbedBuilder()
-      .setTitle(`⚔️ Active Match — ${tournament.name}`)
-      .setColor(COLORS.WARNING)
+    const embed = new EmbedBuilder().setTitle(`⚔️ Active Match — ${tournament.name}`).setColor(COLORS.WARNING)
       .addFields(
-        { name: "🔄 Round", value: `${activeMatch.round}`, inline: true },
-        {
-          name: "🏷️ Match #",
-          value: `${activeMatch.match_number}`,
-          inline: true,
-        },
-        { name: "📊 Status", value: "🟡 In Progress", inline: true },
-        {
-          name: "🆚 Opponent",
-          value: `**${opponentName}** (<@${opponentId}>)`,
-          inline: false,
-        },
-        {
-          name: "📊 Score",
-          value: `You: **${myScore}** — Opponent: **${opponentScore}**\n(First to **${winsNeeded}** wins)`,
-          inline: false,
-        },
+        { name: '🔄 Round', value: `${activeMatch.round}`, inline: true },
+        { name: '🏷️ Match #', value: `${activeMatch.match_number}`, inline: true },
+        { name: '🆚 Opponent', value: `**${oppName}** (<@${oppId}>)`, inline: false },
+        { name: '📊 Score', value: `You: **${myScore}** — Opponent: **${opScore}**\n(First to **${winsNeeded}**)`, inline: false },
       );
+    if (activeMatch.thread_id) embed.addFields({ name: '📌 Thread', value: `**[Go to match](https://discord.com/channels/${interaction.guildId}/${activeMatch.thread_id})**` });
 
-    // Thread link
-    if (activeMatch.thread_id) {
-      const threadUrl = `https://discord.com/channels/${interaction.guildId}/${activeMatch.thread_id}`;
-      embed.addFields({
-        name: "📌 Match Thread",
-        value: `**[Click here to go to your match](${threadUrl})**`,
-        inline: false,
-      });
-    }
-
-    // Match history summary
-    const allMatches = getMatchesByPlayer(tournamentId, interaction.user.id);
-    const completed = allMatches.filter((m) => m.status === "completed");
-    const pending = allMatches.filter((m) => m.status === "pending");
-    const inProgress = allMatches.filter((m) => m.status === "in_progress");
-
-    embed.addFields({
-      name: "📈 Your Progress",
-      value:
-        `✅ Completed: **${completed.length}** · 🟡 Active: **${inProgress.length}** · ⏳ Pending: **${pending.length}**\n` +
-        `📊 Record: **${participant.wins}**W / **${participant.losses}**L / **${participant.draws}**D · **${participant.points}** pts`,
-      inline: false,
-    });
-
-    return interaction.reply({
-      embeds: [embed],
-      flags: MessageFlags.Ephemeral,
-    });
+    const allM = await getMatchesByPlayer(tournament.id, interaction.user.id);
+    embed.addFields({ name: '📈 Progress', value: `✅ ${allM.filter(m=>m.status==='completed').length} done · 🟡 ${allM.filter(m=>m.status==='in_progress').length} active · ⏳ ${allM.filter(m=>m.status==='pending').length} pending\n📊 ${participant.wins}W/${participant.losses}L/${participant.draws}D · ${participant.points} pts` });
+    return interaction.editReply({ embeds: [embed] });
   }
 
-  // No active match — check for pending matches
-  const pendingMatches = getPendingMatchesByPlayer(
-    tournamentId,
-    interaction.user.id,
-  );
-
+  const pendingMatches = await getPendingMatchesByPlayer(tournament.id, interaction.user.id);
   if (pendingMatches.length > 0) {
     const next = pendingMatches[0];
-    const opponentId =
-      next.player1_id === interaction.user.id
-        ? next.player2_id
-        : next.player1_id;
-
-    const opponentData = getParticipant(tournamentId, opponentId);
-    const opponentName =
-      opponentData?.display_name || opponentData?.username || "Unknown";
-
-    const embed = new EmbedBuilder()
-      .setTitle(`⏳ Next Match — ${tournament.name}`)
-      .setColor(COLORS.NEUTRAL)
-      .setDescription(
-        "Your next match hasn't started yet. You'll be notified via DM when it begins!",
-      )
+    const oppId = next.player1_id === interaction.user.id ? next.player2_id : next.player1_id;
+    const oppData = await getParticipant(tournament.id, oppId);
+    const embed = new EmbedBuilder().setTitle(`⏳ Next Match — ${tournament.name}`).setColor(COLORS.NEUTRAL)
+      .setDescription('Your next match hasn\'t started yet.')
       .addFields(
-        { name: "🔄 Round", value: `${next.round}`, inline: true },
-        { name: "🏷️ Match #", value: `${next.match_number}`, inline: true },
-        {
-          name: "🆚 Opponent",
-          value: `**${opponentName}** (<@${opponentId}>)`,
-          inline: false,
-        },
-      );
-
-    // Remaining matches list
-    if (pendingMatches.length > 1) {
-      const upcoming = pendingMatches.slice(1, 4).map((m) => {
-        const oppId =
-          m.player1_id === interaction.user.id ? m.player2_id : m.player1_id;
-        const oppData = getParticipant(tournamentId, oppId);
-        const oppName = oppData?.display_name || oppData?.username || "Unknown";
-        return `　R${m.round} #${m.match_number} vs **${oppName}**`;
-      });
-
-      if (pendingMatches.length > 4) {
-        upcoming.push(`　*…and ${pendingMatches.length - 4} more*`);
-      }
-
-      embed.addFields({
-        name: `📋 Upcoming (${pendingMatches.length} remaining)`,
-        value: upcoming.join("\n"),
-        inline: false,
-      });
-    }
-
-    // Current stats
-    embed.addFields({
-      name: "📊 Your Stats",
-      value: `**${participant.wins}**W / **${participant.losses}**L / **${participant.draws}**D · **${participant.points}** pts · **${participant.matches_played}** played`,
-      inline: false,
-    });
-
-    embed.setFooter({ text: `${pendingMatches.length} match(es) remaining` });
-
-    return interaction.reply({
-      embeds: [embed],
-      flags: MessageFlags.Ephemeral,
-    });
+        { name: '🔄 Round', value: `${next.round}`, inline: true },
+        { name: '🆚 Opponent', value: `**${oppData?.display_name||oppData?.username||'Unknown'}** (<@${oppId}>)`, inline: false },
+      ).setFooter({ text: `${pendingMatches.length} match(es) remaining` });
+    return interaction.editReply({ embeds: [embed] });
   }
 
-  // No pending matches — show summary
-  const allMatches = getMatchesByPlayer(tournamentId, interaction.user.id);
-  const completed = allMatches.filter((m) => m.status === "completed").length;
-
-  const embed = new EmbedBuilder()
-    .setTitle(`✅ All Matches Complete — ${tournament.name}`)
-    .setColor(COLORS.SUCCESS)
-    .setDescription("You have no upcoming or active matches.")
-    .addFields({
-      name: "📊 Final Stats",
-      value:
-        `🎮 **Matches Played:** ${completed}\n` +
-        `✅ **Wins:** ${participant.wins} · ❌ **Losses:** ${participant.losses} · 🤝 **Draws:** ${participant.draws}\n` +
-        `⭐ **Points:** ${participant.points}`,
-      inline: false,
-    })
-    .setTimestamp();
-
-  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  await interaction.editReply({ embeds: [new EmbedBuilder().setTitle(`✅ All Done — ${tournament.name}`).setColor(COLORS.SUCCESS).setDescription(`No more matches.\n📊 ${participant.wins}W/${participant.losses}L · ${participant.points} pts`).setTimestamp()] });
 }
