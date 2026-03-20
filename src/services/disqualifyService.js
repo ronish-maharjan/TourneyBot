@@ -27,12 +27,8 @@ import {
   launchAvailableMatches,
 } from './tournamentService.js';
 import { updateMatchThreadEmbed, markThreadCancelled } from './threadService.js';
-import { acquireLock, releaseLock } from './lockService.js';
 
 export async function disqualifyPlayer(guild, tournament, userId, reason = 'Disqualified by admin') {
-  if (!acquireLock(`dq_${userId}`)) {
-    return { success: false, message: '⏳ This player is already being processed for disqualification.' };
-  }
 
   try {
     const participant = await getParticipant(tournament.id, userId);
@@ -79,8 +75,6 @@ export async function disqualifyPlayer(guild, tournament, userId, reason = 'Disq
   } catch (err) {
     console.error('[DQ] Failed:', err);
     return { success: false, message: `❌ Failed: ${err.message}` };
-  } finally {
-    releaseLock(`dq_${userId}`);
   }
 }
 
