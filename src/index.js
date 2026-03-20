@@ -7,12 +7,6 @@ import { handleMemberJoin } from './events/guildMemberAdd.js';
 import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
 import { cleanStaleLocks } from './services/lockService.js';
 import { handleGuildCreate } from './events/guildCreate.js';
-const { DISCORD_TOKEN } = process.env;
-
-if (!DISCORD_TOKEN) {
-  console.error('[FATAL] DISCORD_TOKEN is not set in .env');
-  process.exit(1);
-}
 
 // ── Bootstrap database (async now) ──────────────────────────────
 await initializeDatabase();
