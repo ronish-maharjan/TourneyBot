@@ -39,7 +39,13 @@ client.once(Events.ClientReady, () => {
 client.on(Events.InteractionCreate, interaction => handleInteraction(interaction, client));
 client.on(Events.GuildMemberAdd, member => handleMemberJoin(member));
 client.on(Events.GuildCreate, guild => handleGuildCreate(guild));
-client.login(DISCORD_TOKEN);
+
+client.login(DISCORD_TOKEN).catch(err => {
+  console.error('[FATAL] Discord login failed:', err.message);
+  process.exit(1);
+});
+
+client.on('error', err => console.error('[BOT] Client error:', err));
 
 const shutdown = async () => {
   console.log('\n[BOT] Shutting down…');
