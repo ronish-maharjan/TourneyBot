@@ -8,7 +8,7 @@ import { handleMemberJoin } from './events/guildMemberAdd.js';
 import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
 import { cleanStaleLocks } from './services/lockService.js';
 import { handleGuildCreate } from './events/guildCreate.js';
-
+import http from 'http';
 const { DISCORD_TOKEN } = process.env;
 if (!DISCORD_TOKEN) {
   console.error('[FATAL] DISCORD_TOKEN is not set in .env');
@@ -50,3 +50,5 @@ const shutdown = async () => {
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+http.createServer((req, res) => res.end('Bot is running')).listen(process.env.PORT || 3000);
