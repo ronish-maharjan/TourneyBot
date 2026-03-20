@@ -2,6 +2,7 @@ import { SlashCommandBuilder, MessageFlags } from 'discord.js';
 import { isOrganizer } from '../../utils/permissions.js';
 import { findTournamentByContext } from '../../utils/helpers.js';
 import { disqualifyPlayer } from '../../services/disqualifyService.js';
+import { acquireLock, releaseLock } from '../../services/lockService.js';
 
 export const data = new SlashCommandBuilder()
   .setName('disqualify')
@@ -19,7 +20,19 @@ export async function execute(interaction) {
   const targetUser = interaction.options.getUser('user', true);
   const reason     = interaction.options.getString('reason') || 'Disqualified by admin';
 
+  const lockKey = `dq_${targetUser.id}`;
+  if (!acquireLock(lockKey)) {
+    return interaction.reply({ content: '⏳ This player is already being processed.', flags: MessageFlags.Ephemeral });
+  }
+
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const result = await disqualifyPlayer(interaction.guild, tournament, targetUser.id, reason);
-  await interaction.editReply({ content: result.message });
+
+  try {
+    const result = await disqualifyPlayer(interaction.guild, tournament, targetUser.id, reason);
+    await interaction.editReply({ content: result.message });
+  } catch (err) {
+    await interaction.editReply({ content: `❌ Failed: ${err.message}` });
+  } finally {
+    releaseLock(lockKey);
+  }
 }

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { registerFonts } from './canvas/registerFonts.js';
 import { Client, Collection, GatewayIntentBits, Events } from 'discord.js';
 import { initializeDatabase, closeDatabase } from './database/init.js';
 import { loadCommands } from './utils/helpers.js';
@@ -17,7 +18,7 @@ if (!DISCORD_TOKEN) {
 
 // ── Bootstrap database (async now) ──────────────────────────────
 await initializeDatabase();
-
+registerFonts();
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,

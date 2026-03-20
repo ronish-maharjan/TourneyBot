@@ -9,7 +9,7 @@ import {
   getTournamentById, getActiveParticipantCount, getMatchById, getParticipant,
   getGiveawayById, getGiveawayConfig, getGiveawayChannels,
   hasEnteredGiveaway, addGiveawayEntry, removeGiveawayEntry,
-  getGiveawayEntryCount, updateGiveawayApproval, getCompletedMatchCount, getTotalMatchCount,
+  getGiveawayEntryCount, updateGiveawayApproval, getCompletedMatchCount, getTotalMatchCount,removeGiveawayChannel
 } from '../database/queries.js';
 import { COLORS, TOURNAMENT_STATUS, VALID_BEST_OF } from '../config.js';
 import {
@@ -400,23 +400,38 @@ async function handleGiveawayApprove(interaction, giveawayId) {
     }
   } catch { return interaction.reply({ content: '❌ Cannot verify permissions.', flags: MessageFlags.Ephemeral }); }
 
-  const channels = await getGiveawayChannels(giveaway.guild_id);
-  if (channels.length === 0) return interaction.reply({ content: '❌ No channels configured.', flags: MessageFlags.Ephemeral });
+  const allChannels = await getGiveawayChannels(giveaway.guild_id);
+
+  // Auto-cleanup deleted channels
+  const validChannels = [];
+  for (const ch of allChannels) {
+    const resolved = guild.channels.cache.get(ch.channel_id);
+    if (resolved) {
+      validChannels.push(ch);
+    } else {
+      await removeGiveawayChannel(giveaway.guild_id, ch.channel_id);
+      console.log(`[GIVEAWAY] Auto-cleaned deleted channel: ${ch.channel_id}`);
+    }
+  }
+
+  if (validChannels.length === 0) {
+    return interaction.reply({ content: '❌ No valid giveaway channels. All were deleted. Ask admin to add new ones.', flags: MessageFlags.Ephemeral });
+  }
 
   const rows = [];
   const row = new ActionRowBuilder();
-  for (let i = 0; i < channels.length && i < 5; i++) {
-    const ch = guild.channels.cache.get(channels[i].channel_id);
+  for (let i = 0; i < validChannels.length && i < 5; i++) {
+    const ch = guild.channels.cache.get(validChannels[i].channel_id);
     const label = ch ? `#${ch.name}` : 'Unknown';
-    row.addComponents(new ButtonBuilder().setCustomId(`ga_channel_${giveawayId}:${channels[i].channel_id}`).setLabel(label.substring(0, 40)).setEmoji('📢').setStyle(ButtonStyle.Primary));
+    row.addComponents(new ButtonBuilder().setCustomId(`ga_channel_${giveawayId}:${validChannels[i].channel_id}`).setLabel(label.substring(0, 40)).setEmoji('📢').setStyle(ButtonStyle.Primary));
   }
   rows.push(row);
 
-  if (channels.length > 5) {
+  if (validChannels.length > 5) {
     const row2 = new ActionRowBuilder();
-    for (let i = 5; i < channels.length && i < 10; i++) {
-      const ch = guild.channels.cache.get(channels[i].channel_id);
-      row2.addComponents(new ButtonBuilder().setCustomId(`ga_channel_${giveawayId}:${channels[i].channel_id}`).setLabel((ch ? `#${ch.name}` : 'Unknown').substring(0, 40)).setEmoji('📢').setStyle(ButtonStyle.Primary));
+    for (let i = 5; i < validChannels.length && i < 10; i++) {
+      const ch = guild.channels.cache.get(validChannels[i].channel_id);
+      row2.addComponents(new ButtonBuilder().setCustomId(`ga_channel_${giveawayId}:${validChannels[i].channel_id}`).setLabel((ch ? `#${ch.name}` : 'Unknown').substring(0, 40)).setEmoji('📢').setStyle(ButtonStyle.Primary));
     }
     rows.push(row2);
   }
