@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { Client, Collection, GatewayIntentBits, Events } from 'discord.js';
 import { initializeDatabase, closeDatabase } from './database/init.js';
 import { loadCommands } from './utils/helpers.js';
@@ -9,12 +8,6 @@ import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.
 import { cleanStaleLocks } from './services/lockService.js';
 import { handleGuildCreate } from './events/guildCreate.js';
 const { DISCORD_TOKEN } = process.env;
-import http from 'http';
-
-// Start HTTP server immediately so Render doesn't timeout
-http.createServer((req, res) => res.end('Bot is running')).listen(process.env.PORT || 3000, () => {
-  console.log(`[HTTP] Server listening on port ${process.env.PORT || 3000}`);
-});
 
 if (!DISCORD_TOKEN) {
   console.error('[FATAL] DISCORD_TOKEN is not set in .env');
