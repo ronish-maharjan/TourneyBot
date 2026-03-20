@@ -8,8 +8,14 @@ import { handleMemberJoin } from './events/guildMemberAdd.js';
 import { startGiveawayTimer, stopGiveawayTimer } from './services/giveawayTimer.js';
 import { cleanStaleLocks } from './services/lockService.js';
 import { handleGuildCreate } from './events/guildCreate.js';
-import http from 'http';
 const { DISCORD_TOKEN } = process.env;
+import http from 'http';
+
+// Start HTTP server immediately so Render doesn't timeout
+http.createServer((req, res) => res.end('Bot is running')).listen(process.env.PORT || 3000, () => {
+  console.log(`[HTTP] Server listening on port ${process.env.PORT || 3000}`);
+});
+
 if (!DISCORD_TOKEN) {
   console.error('[FATAL] DISCORD_TOKEN is not set in .env');
   process.exit(1);
@@ -56,5 +62,3 @@ const shutdown = async () => {
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
-
-http.createServer((req, res) => res.end('Bot is running')).listen(process.env.PORT || 3000);
