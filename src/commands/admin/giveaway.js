@@ -10,6 +10,7 @@ export const data = new SlashCommandBuilder()
     .addRoleOption(o => o.setName('ping_role').setDescription('Ping role').setRequired(false))
     .addBooleanOption(o => o.setName('clear_ping').setDescription('Clear ping role').setRequired(false)))
   .addSubcommand(s => s.setName('removechannel').setDescription('Remove giveaway channel').addChannelOption(o => o.setName('channel').setDescription('Channel').setRequired(true)))
+  .addSubcommand(s => s.setName('cleanup').setDescription('Remove deleted channels from giveaway config'))
   .addSubcommand(s => s.setName('config').setDescription('View giveaway config'))
   .addSubcommand(s => s.setName('create').setDescription('Create a giveaway'))
   .addSubcommand(s => s.setName('end').setDescription('End giveaway early (Staff)').addIntegerOption(o => o.setName('id').setDescription('Giveaway ID').setRequired(true)))
@@ -19,14 +20,19 @@ export async function execute(interaction) {
   if (!interaction.guild) return interaction.reply({ content: '❌ Server only.', flags: MessageFlags.Ephemeral });
   const sub = interaction.options.getSubcommand();
   switch (sub) {
-    case 'setup': return handleSetup(interaction);
+    case 'setup':         return handleSetup(interaction);
     case 'removechannel': return handleRemoveChannel(interaction);
-    case 'config': return handleConfig(interaction);
-    case 'create': return handleCreate(interaction);
-    case 'end': return handleEnd(interaction);
-    case 'reroll': return handleReroll(interaction);
+    case 'cleanup':       return handleCleanup(interaction);
+    case 'config':        return handleConfig(interaction);
+    case 'create':        return handleCreate(interaction);
+    case 'end':           return handleEnd(interaction);
+    case 'reroll':        return handleReroll(interaction);
   }
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  SETUP
+// ═════════════════════════════════════════════════════════════════
 
 async function handleSetup(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) return interaction.reply({ content: '❌ Need **Manage Server**.', flags: MessageFlags.Ephemeral });
@@ -93,6 +99,10 @@ async function handleSetup(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  REMOVE CHANNEL
+// ═════════════════════════════════════════════════════════════════
+
 async function handleRemoveChannel(interaction) {
   if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) return interaction.reply({ content: '❌ Need **Manage Server**.', flags: MessageFlags.Ephemeral });
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -104,30 +114,126 @@ async function handleRemoveChannel(interaction) {
   await interaction.editReply({ content: `✅ Removed <#${channel.id}>. (${total} remaining)` });
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  CLEANUP — Remove deleted channels
+// ═════════════════════════════════════════════════════════════════
+
+async function handleCleanup(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+    return interaction.reply({ content: '❌ Need **Manage Server**.', flags: MessageFlags.Ephemeral });
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const channels = await getGiveawayChannels(interaction.guildId);
+  if (channels.length === 0) {
+    return interaction.editReply({ content: '📭 No giveaway channels configured.' });
+  }
+
+  let removed = 0;
+  for (const ch of channels) {
+    try {
+      const resolved = await interaction.guild.channels.fetch(ch.channel_id).catch(() => null);
+      if (!resolved) {
+        await removeGiveawayChannel(interaction.guildId, ch.channel_id);
+        removed++;
+      }
+    } catch {
+      await removeGiveawayChannel(interaction.guildId, ch.channel_id);
+      removed++;
+    }
+  }
+
+  if (removed === 0) {
+    return interaction.editReply({ content: '✅ All giveaway channels are valid. Nothing to clean up.' });
+  }
+
+  const remaining = (await getGiveawayChannels(interaction.guildId)).length;
+  await interaction.editReply({
+    content: `🧹 Cleaned up **${removed}** deleted channel(s).\n📢 Remaining channels: **${remaining}**`,
+  });
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  CONFIG — View settings (highlights deleted channels)
+// ═════════════════════════════════════════════════════════════════
+
 async function handleConfig(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const config = await getGiveawayConfig(interaction.guildId);
   const channels = await getGiveawayChannels(interaction.guildId);
   const embed = new EmbedBuilder().setTitle('⚙️ Giveaway Config').setColor(COLORS.INFO).setTimestamp();
-  if (!config) { embed.setDescription('📭 Not configured.\n\n```\n/giveaway setup staff_role:@Staff channel:#giveaways\n```'); }
-  else {
+
+  if (!config) {
+    embed.setDescription('📭 Not configured.\n\n```\n/giveaway setup staff_role:@Staff channel:#giveaways\n```');
+  } else {
+    // Staff role check
     const staff = interaction.guild.roles.cache.get(config.staff_role_id);
-    const ping = config.ping_role_id ? interaction.guild.roles.cache.get(config.ping_role_id) : null;
-    const chList = channels.length > 0 ? channels.map((c, i) => { const ch = interaction.guild.channels.cache.get(c.channel_id); return ch ? `**${i+1}.** <#${c.channel_id}>` : `**${i+1}.** ~~Deleted~~`; }).join('\n') : 'None';
+    const staffDisplay = staff ? `<@&${staff.id}>` : '⚠️ ~~Deleted Role~~';
+
+    // Ping role check
+    let pingDisplay = '`@everyone` _(default)_';
+    if (config.ping_role_id) {
+      const pingRole = interaction.guild.roles.cache.get(config.ping_role_id);
+      pingDisplay = pingRole ? `<@&${pingRole.id}>` : '⚠️ ~~Deleted Role~~';
+    }
+
+    // Channel check — verify each one
+    let channelList = 'None — add with `/giveaway setup channel:#channel`';
+    let hasDeleted = false;
+
+    if (channels.length > 0) {
+      const lines = [];
+      for (let i = 0; i < channels.length; i++) {
+        try {
+          const ch = await interaction.guild.channels.fetch(channels[i].channel_id).catch(() => null);
+          if (ch) {
+            lines.push(`**${i + 1}.** <#${channels[i].channel_id}>`);
+          } else {
+            lines.push(`**${i + 1}.** ⚠️ ~~Deleted Channel~~ (\`${channels[i].channel_id}\`)`);
+            hasDeleted = true;
+          }
+        } catch {
+          lines.push(`**${i + 1}.** ⚠️ ~~Deleted Channel~~ (\`${channels[i].channel_id}\`)`);
+          hasDeleted = true;
+        }
+      }
+      channelList = lines.join('\n');
+    }
+
     embed.addFields(
-      { name: '👥 Staff Role', value: staff ? `<@&${staff.id}>` : 'Unknown', inline: true },
-      { name: '🔔 Ping Role', value: ping ? `<@&${ping.id}>` : '`@everyone`', inline: true },
-      { name: `📢 Channels (${channels.length}/10)`, value: chList, inline: false },
+      { name: '👥 Staff Role', value: staffDisplay, inline: true },
+      { name: '🔔 Ping Role', value: pingDisplay, inline: true },
+      { name: `📢 Channels (${channels.length}/10)`, value: channelList, inline: false },
     );
+
+    if (hasDeleted) {
+      embed.addFields({
+        name: '⚠️ Deleted Channels Found',
+        value: 'Run `/giveaway cleanup` to remove deleted channels.',
+      });
+    }
+
+    if (!staff) {
+      embed.addFields({
+        name: '⚠️ Staff Role Deleted',
+        value: 'Run `/giveaway setup staff_role:@NewRole` to fix.',
+      });
+    }
   }
+
   await interaction.editReply({ embeds: [embed] });
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  CREATE
+// ═════════════════════════════════════════════════════════════════
 
 async function handleCreate(interaction) {
   const config = await getGiveawayConfig(interaction.guildId);
   const channels = await getGiveawayChannels(interaction.guildId);
-  if (!config) return interaction.reply({ content: '❌ Not configured. Ask admin to run `/giveaway setup`.', flags: MessageFlags.Ephemeral });
-  if (channels.length === 0) return interaction.reply({ content: '❌ No channels. Ask admin to run `/giveaway setup channel:#channel`.', flags: MessageFlags.Ephemeral });
+  if (!config) return interaction.reply({ content: '❌ Not configured. Ask admin: `/giveaway setup`.', flags: MessageFlags.Ephemeral });
+  if (channels.length === 0) return interaction.reply({ content: '❌ No channels. Ask admin: `/giveaway setup channel:#channel`.', flags: MessageFlags.Ephemeral });
 
   const modal = new ModalBuilder().setCustomId('modal_giveaway_create').setTitle('Create a Giveaway');
   modal.addComponents(
@@ -138,6 +244,10 @@ async function handleCreate(interaction) {
   );
   await interaction.showModal(modal);
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  END
+// ═════════════════════════════════════════════════════════════════
 
 async function handleEnd(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -151,6 +261,10 @@ async function handleEnd(interaction) {
   await endGiveaway(interaction.guild, giveaway);
   await interaction.editReply({ content: `✅ Giveaway **#${giveaway.id}** ended!` });
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  REROLL
+// ═════════════════════════════════════════════════════════════════
 
 async function handleReroll(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
